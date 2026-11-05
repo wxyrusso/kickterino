@@ -44,6 +44,16 @@ const platformOf = (key) => (String(key).startsWith('twitch:') ? 'twitch' : 'kic
 const nameOf = (key) => String(key).replace(/^twitch:/, '');
 const partitionOf = (key) => (platformOf(key) === 'twitch' ? TWITCH_PARTITION : PARTITION);
 const channelUrl = (key) => (platformOf(key) === 'twitch' ? `${TWITCH}/${nameOf(key)}` : `${KICK}/${key}`);
+// Live escondida só com o player (sem chat, painéis e o resto do site): bem menos memória.
+// Twitch: o autor do Twitchterino mediu em 04/11/2026, com conta logada, ~220 MB contra ~440 MB por
+// live, os mesmos pontos e o baú aparecendo. Kick: opcional (config.kickWatchMode = 'player').
+const watchMode = (key) => (platformOf(key) === 'twitch' ? (config.twitchWatchMode || 'player') : (config.kickWatchMode || 'page'));
+const watchUrl = (key) => {
+  if (watchMode(key) !== 'player') return channelUrl(key);
+  return platformOf(key) === 'twitch'
+    ? `https://player.twitch.tv/?channel=${encodeURIComponent(nameOf(key))}&parent=www.twitch.tv&muted=true&autoplay=true`
+    : `https://player.kick.com/${encodeURIComponent(key)}?muted=true&autoplay=true`;
+};
 const POLL_MS = 60 * 1000;
 const PLAYER_CHECK_MS = 30 * 1000;
 
@@ -446,7 +456,7 @@ function startWatcher(slug) {
   watcherIds.add(wcId);
   win.on('closed', () => watcherIds.delete(wcId));
   instrumentWatcher(slug, win);
-  win.loadURL(channelUrl(slug));
+  win.loadURL(watchUrl(slug));
   makeInvisible(win);
   // Fechar a live aberta só a torna invisível de novo: volta para 160p, sem som e sem imagens.
   win.on('close', (e) => {
@@ -454,7 +464,7 @@ function startWatcher(slug) {
     e.preventDefault();
     makeInvisible(win);
     win.webContents.setAudioMuted(true);
-    win.webContents.reload();
+    win.loadURL(watchUrl(slug)); // volta para o modo leve (só o player, se for o caso)
   });
   win.on('closed', () => { if (watchers.get(slug) === win) watchers.delete(slug); });
   // Página que caiu ou não carregou: fecha, e a próxima rodada abre de novo (ou põe outra live).
@@ -1678,7 +1688,7 @@ ipcMain.handle('limitTest:start', () => {
 ipcMain.handle('limitTest:stop', () => { stopLimitTest(); reconcileWatchers(); return snapshot(); });
 ipcMain.handle('lowQuality:set', (_e, on) => {
   config.lowQuality = !!on; saveConfig();
-  for (const win of watchers.values()) if (!win.isDestroyed() && !userOpened.has(win)) win.webContents.reload();
+  for (const [slug, win] of watchers) if (!win.isDestroyed() && !userOpened.has(win)) win.loadURL(watchUrl(slug));
   return snapshot();
 });
 ipcMain.handle('refresh', async () => { await poll(); return snapshot(); });
@@ -1799,7 +1809,7 @@ ipcMain.handle('channel:show', (_e, slug) => {
   win.setFocusable(true);
   win.setSize(960, 600); win.center();
   win.show(); win.focus();
-  win.webContents.reload();
+  win.loadURL(channelUrl(slug)); // à vista: a página inteira do canal, com chat e tudo
   const s = status.get(slug);
   if (s) s.ageGate = false;
   send('status', snapshot());
