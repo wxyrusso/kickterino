@@ -122,3 +122,4 @@ input.bonus-edit { width: 84px; padding: 2px 6px; font-size: 12px; }
 .bonus-col .bonus-chip:nth-child(2) .bonus-name::before { content: "⚡ "; }
 .bonus-col .bonus-chip:nth-child(3) .bonus-name::before { content: "🎯 "; }
 .bonus-col .bonus-chip:nth-child(4) .bonus-name::before { content: "✨ "; }
+.brand-img { width: 26px; height: 26px; border-radius: 7px; vertical-align: middle; margin-right: 8px; box-shadow: 0 0 14px rgba(145, 70, 255, .45), 0 0 14px rgba(83, 252, 24, .3); }
