@@ -226,7 +226,12 @@ async function getAppToken(fetchFn, clientId, clientSecret) {
   if (appToken && appToken.clientId === clientId && appToken.exp > Date.now() + 60 * 1000) return appToken.token;
   const body = new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: 'client_credentials' });
   const res = await fetchFn('https://id.twitch.tv/oauth2/token', { method: 'POST', body });
-  if (!res.ok) throw new Error(`token HTTP ${res.status}`);
+  if (!res.ok) {
+    const msg = ((await res.json().catch(() => ({}))).message || '').toLowerCase();
+    if (msg.includes('client secret')) throw new Error('Client Secret inválido. Gere um novo em dev.twitch.tv (Gerenciar > Novo segredo) e cole aqui.');
+    if (msg.includes('client')) throw new Error('Client ID inválido. Confira o Client ID do app em dev.twitch.tv.');
+    throw new Error(`a Twitch recusou o app (HTTP ${res.status})`);
+  }
   const json = await res.json();
   appToken = { token: json.access_token, exp: Date.now() + json.expires_in * 1000, clientId };
   return appToken.token;
