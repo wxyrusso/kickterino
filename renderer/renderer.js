@@ -117,17 +117,50 @@ function renderTabs() {
   // Favoritos primeiro (só na tela: a ordem da lista, usada sem o foco em bônus, não muda).
   const favs = new Set(state.favorites || []);
   const ordered = [...state.channels.filter((c) => favs.has(c.slug)), ...state.channels.filter((c) => !favs.has(c.slug))];
-  // O PokeIdle aberto vira a primeira aba: o jogo aparece no lugar do chat.
-  if ((state.pokeIdle || {}).open) {
-    const t = el('div', 'tab poke-tab' + (pokeMode ? ' active' : ''));
-    t.append(el('span', null, '🎮 PokeIdle'));
-    const x = el('span', 'poke-close', '✕');
-    x.title = 'Fechar o PokeIdle (encerra a sessão do jogo no app)';
-    x.onclick = async (e) => { e.stopPropagation(); pokeMode = false; applyState(await window.kick.closePokeIdle()); };
-    t.append(x);
-    t.title = 'Jogo aberto dentro do app. Clique num canal para voltar ao chat; o jogo continua rodando.';
-    t.onclick = () => showPoke();
+  // Contas do PokeIdle viram as primeiras abas: o jogo aparece no lugar do chat. A principal só
+  // aparece depois de aberta; as outras ficam sempre (apagadas quando fechadas) e o 🎮+ cria mais.
+  const pokeAccounts = (state.pokeIdle || {}).accounts || [];
+  for (const acc of pokeAccounts) {
+    if (acc.id === 'principal' && !acc.open && pokeAccounts.length === 1) continue;
+    const t = el('div', 'tab poke-tab' + (pokeMode === acc.id ? ' active' : '') + (acc.open ? '' : ' closed'));
+    t.append(el('span', null, `🎮 ${acc.label}`));
+    if (acc.open || acc.id !== 'principal') {
+      const x = el('span', 'poke-close', '✕');
+      x.title = acc.open ? `Fechar o PokeIdle de ${acc.label} (encerra a sessão no app)`
+        : `Tirar a aba ${acc.label} (o login dela fica guardado)`;
+      x.onclick = async (e) => {
+        e.stopPropagation();
+        if (pokeMode === acc.id) pokeMode = false;
+        applyState(await (acc.open ? window.kick.closePokeIdle(acc.id) : window.kick.removePokeAccount(acc.id)));
+      };
+      t.append(x);
+    }
+    t.title = acc.open ? `PokeIdle de ${acc.label}. Clique num canal para voltar ao chat; o jogo continua rodando.`
+      : `Abrir o PokeIdle de ${acc.label}`;
+    t.onclick = () => showPoke(acc.id);
     nav.append(t);
+  }
+  if (pokeAccounts.some((a) => a.open) || pokeAccounts.length > 1) {
+    const addPoke = el('div', 'tab add poke-add', '🎮+');
+    addPoke.title = 'Abrir outra conta do PokeIdle (sessão separada, como no D2K)';
+    addPoke.onclick = () => {
+      const input = el('input');
+      input.placeholder = 'nome da conta do jogo';
+      input.maxLength = 20;
+      addPoke.replaceChildren(input);
+      input.focus();
+      const done = async (commit) => {
+        if (commit && input.value.trim()) {
+          const res = await window.kick.addPokeAccount(input.value, chatRect());
+          if (res.error) toast(res.error);
+          else { pokeMode = res.added; applyState(res); return; }
+        }
+        renderTabs();
+      };
+      input.onkeydown = (e) => { if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); };
+      input.onblur = () => done(false);
+    };
+    nav.append(addPoke);
   }
   for (const ch of ordered) {
     const queued = ch.live && !ch.watching;
@@ -170,10 +203,10 @@ const chatRect = () => {
   const r = $('#chat-col').getBoundingClientRect();
   return { x: r.left, y: r.top, width: r.width, height: r.height };
 };
-async function showPoke() {
-  pokeMode = true;
+async function showPoke(id = 'principal') {
+  pokeMode = id;
   renderTabs();
-  applyState(await window.kick.showPokeIdle(chatRect()));
+  applyState(await window.kick.showPokeIdle(id, chatRect()));
 }
 function leavePoke() {
   if (!pokeMode) return;
@@ -340,7 +373,8 @@ function applyState(s) {
     if (was === true && !ch.live) pushMessage(ch.slug, systemMessage(`${ch.displayName} está offline.`));
   }
   if (!active && state.channels.length) active = state.channels[0].slug;
-  if (!(state.pokeIdle || {}).open) pokeMode = false; // o jogo foi fechado (ou caiu)
+  // A conta do PokeIdle na tela foi fechada (ou caiu): volta para o chat.
+  if (pokeMode && !(((state.pokeIdle || {}).accounts || []).find((a) => a.id === pokeMode) || {}).open) pokeMode = false;
   // Conta alt: o nome dela aparece na marca e no título, para não confundir as janelas.
   const appName = state.account ? `TK MultiStream · ${state.account}` : 'TK MultiStream';
   // No topo fica só o ícone; nas alts, um selinho com o nome da conta.
@@ -478,9 +512,9 @@ function renderBonusBox() {
   const now = Date.now();
   const bar = el('div', 'poke-bar');
   const open = (state.pokeIdle || {}).open;
-  const btn = el('button', 'poke-open', open ? (pokeMode ? '🎮 PokeIdle na tela' : '🎮 Mostrar PokeIdle') : '🎮 Abrir PokeIdle');
+  const btn = el('button', 'poke-open', open ? (pokeMode === 'principal' ? '🎮 PokeIdle na tela' : '🎮 Mostrar PokeIdle') : '🎮 Abrir PokeIdle');
   btn.title = 'Abre o jogo no lugar do chat, numa aba própria. Enquanto ele estiver aberto, o app lê sozinho o tempo do Bônus Twitch e do Bônus Kick. O PokeIdle só aceita uma sessão por conta: se a mesma conta estiver aberta no D2K ou no navegador, uma delas cai.';
-  btn.onclick = () => showPoke();
+  btn.onclick = () => showPoke('principal');
   bar.append(btn);
   // Extensões do Chrome carregadas no PokeIdle; as que têm painel próprio ganham um botão.
   const exts = state.pokeExtensions || [];
@@ -533,7 +567,7 @@ function closeModal() {
   if (modalKind === 'intro') window.kick.introDone().then(applyState);
   modalKind = null;
   $('#modal').hidden = true;
-  if (pokeMode) window.kick.showPokeIdle(chatRect());
+  if (pokeMode) window.kick.showPokeIdle(pokeMode, chatRect());
 }
 $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#modal').hidden) closeModal(); });
@@ -818,7 +852,7 @@ $('#splitter').addEventListener('mousedown', (e) => {
     document.body.classList.remove('resizing');
     const width = setPanelWidth(innerWidth - ev.clientX);
     try { localStorage.setItem('panelWidth', String(width)); } catch {}
-    if (wasPoke && pokeMode) requestAnimationFrame(() => window.kick.showPokeIdle(chatRect()));
+    if (wasPoke && pokeMode) requestAnimationFrame(() => window.kick.showPokeIdle(pokeMode, chatRect()));
   };
   addEventListener('mousemove', move);
   addEventListener('mouseup', up);

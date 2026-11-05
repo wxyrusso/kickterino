@@ -197,11 +197,12 @@ function isTrustedUrl(url) {
 }
 
 app.on('web-contents-created', (_e, wc) => {
-  // O pop-up de login usa a mesma sessão da página que o abriu (Kick ou Twitch).
+  // O pop-up de login usa a mesma sessão da página que o abriu (Kick, Twitch ou a conta do PokeIdle).
+  const sameSession = () => [TWITCH_PARTITION, ...pokeAccountIds().map(pokePartition)]
+    .find((p) => wc.session === session.fromPartition(p)) || PARTITION;
   wc.setWindowOpenHandler(({ url }) => (isTrustedUrl(url) ? {
     action: 'allow',
-    overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: { partition: wc.session === session.fromPartition(TWITCH_PARTITION) ? TWITCH_PARTITION
-      : wc.session === session.fromPartition(POKEIDLE_PARTITION) ? POKEIDLE_PARTITION : PARTITION } },
+    overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: { partition: sameSession() } },
   } : { action: 'deny' }));
   const guard = (details) => { if (details.isMainFrame && !isTrustedUrl(details.url)) details.preventDefault(); };
   wc.on('will-navigate', guard);
@@ -723,18 +724,28 @@ function findPokeBonus(obj, depth = 0, out = {}) {
   return out;
 }
 
-// O jogo fica DENTRO da janela do app, no lugar do chat (uma "aba" PokeIdle): a interface manda o
-// retângulo da área do chat e o jogo é desenhado por cima dele. Trocar para um canal só esconde o
-// jogo, que continua rodando; "Fechar" encerra a sessão do jogo.
-let pokeView = null;
+// O jogo fica DENTRO da janela do app, no lugar do chat, numa aba por conta do PokeIdle
+// ("🎮 Principal", "🎮 alt1"...). Cada conta tem a própria sessão (login separado, uma não derruba a
+// outra), como num navegador multiconta. Trocar para um canal só esconde o jogo, que continua
+// rodando; o ✕ da aba encerra a sessão daquela conta no app.
+const POKE_MAIN = 'principal';
 const POKEIDLE_FIX_CSS = `
   #mk-corpo .mk-grade > .mk-card { min-height: max-content; }
   #mk-corpo .mk-grade { grid-auto-rows: max-content; grid-template-rows: none; }
 `;
-let pokeVisible = false;
+const pokePartition = (id) => (id === POKE_MAIN ? POKEIDLE_PARTITION : `persist:pokeidle-${id}`);
+const pokeLabel = (id) => (id === POKE_MAIN ? 'Principal' : id);
+const pokeAccountIds = () => [POKE_MAIN, ...(config.pokeAccounts || []).filter((id) => /^[a-z0-9_-]{1,20}$/.test(id))];
+const pokeViews = new Map(); // id -> WebContentsView
+let pokeActive = null;        // conta do PokeIdle na tela (null = chat)
 let pokeBounds = null;
 
-function attachPokeReader(wc) {
+const pokeIsOpen = (id) => { const v = pokeViews.get(id); return !!v && !v.webContents.isDestroyed(); };
+const pokeOpen = () => pokeIsOpen(POKE_MAIN);
+
+// Os bônus lidos do jogo vão para o painel quando a conta é a principal (é ela que farma aqui).
+// As outras contas guardam o que foi lido para mostrar quando a aba delas estiver na tela.
+function attachPokeReader(wc, id) {
   const dbg = wc.debugger;
   try { dbg.attach('1.3'); } catch {}
   dbg.on('message', (_e, method, p) => {
@@ -745,76 +756,102 @@ function attachPokeReader(wc) {
     let msg;
     try { msg = JSON.parse(text); } catch { return; }
     const found = findPokeBonus(msg);
-    let changed = false;
-    for (const platform of Object.keys(found)) { setPokeBonus(platform, found[platform], 'jogo'); changed = true; }
-    if (changed) {
+    if (!Object.keys(found).length) return;
+    if (id === POKE_MAIN) {
+      for (const platform of Object.keys(found)) setPokeBonus(platform, found[platform], 'jogo');
       config.pokeReadAt = Date.now();
-      saveConfig(); configDirty = false;
-      send('status', snapshot());
-      updateTray();
+    } else {
+      const prev = (config.pokeBonusOthers || {})[id] || {};
+      config.pokeBonusOthers = { ...(config.pokeBonusOthers || {}), [id]: { ...prev, ...found, readAt: Date.now() } };
     }
+    saveConfig(); configDirty = false;
+    send('status', snapshot());
+    updateTray();
   });
   dbg.sendCommand('Network.enable').catch(() => {});
 }
 
-const pokeOpen = () => !!pokeView && !pokeView.webContents.isDestroyed();
+// Cada sessão de conta recebe as mesmas regras de segurança e as extensões do Chrome.
+const preparedPokeSessions = new Map(); // partição -> Promise
+function preparePokeSession(id) {
+  const part = pokePartition(id);
+  if (!preparedPokeSessions.has(part)) {
+    if (id !== POKE_MAIN) setupPartition(part);
+    preparedPokeSessions.set(part, loadPokeExtensionsInto(part));
+  }
+  return preparedPokeSessions.get(part);
+}
 
-function ensurePokeView() {
-  if (pokeOpen()) return pokeView;
-  pokeView = new WebContentsView({ webPreferences: { partition: POKEIDLE_PARTITION, backgroundThrottling: false } });
-  pokeView.setBackgroundColor('#1b1b1b');
-  mainWin.contentView.addChildView(pokeView);
-  attachPokeReader(pokeView.webContents);
-  pokeView.webContents.on('render-process-gone', () => closePokeIdle());
+async function ensurePokeView(id) {
+  if (pokeIsOpen(id)) return pokeViews.get(id);
+  await preparePokeSession(id).catch(() => {});
+  if (pokeIsOpen(id)) return pokeViews.get(id);
+  const view = new WebContentsView({ webPreferences: { partition: pokePartition(id), backgroundThrottling: false } });
+  view.setBackgroundColor('#1b1b1b');
+  mainWin.contentView.addChildView(view);
+  attachPokeReader(view.webContents, id);
+  view.webContents.on('render-process-gone', () => closePokeIdle(id));
   // Na área do app o Market espremia os cartões para caber na altura: o nome e o botão Comprar
   // ficavam cortados embaixo. Os cartões ficam com a altura deles e a grade rola.
-  pokeView.webContents.on('dom-ready', () => {
-    pokeView && pokeView.webContents.insertCSS(POKEIDLE_FIX_CSS).catch(() => {});
-  });
-  pokeView.webContents.loadURL(POKEIDLE_URL);
-  pokeView.setVisible(false);
-  return pokeView;
+  view.webContents.on('dom-ready', () => { view.webContents.insertCSS(POKEIDLE_FIX_CSS).catch(() => {}); });
+  view.webContents.loadURL(POKEIDLE_URL);
+  view.setVisible(false);
+  pokeViews.set(id, view);
+  return view;
 }
 
 function applyPokeBounds() {
-  if (!pokeOpen() || !pokeBounds) return;
+  if (!pokeActive || !pokeIsOpen(pokeActive) || !pokeBounds) return;
   const r = pokeBounds;
-  pokeView.setBounds({ x: Math.round(r.x), y: Math.round(r.y), width: Math.max(1, Math.round(r.width)), height: Math.max(1, Math.round(r.height)) });
+  pokeViews.get(pokeActive).setBounds({ x: Math.round(r.x), y: Math.round(r.y), width: Math.max(1, Math.round(r.width)), height: Math.max(1, Math.round(r.height)) });
 }
 
-function showPokeIdle(bounds) {
+async function showPokeIdle(id = POKE_MAIN, bounds) {
+  if (!pokeAccountIds().includes(id)) return;
   if (bounds) pokeBounds = bounds;
-  const view = ensurePokeView();
+  for (const [other, v] of pokeViews) if (other !== id && !v.webContents.isDestroyed()) v.setVisible(false);
+  const view = await ensurePokeView(id);
+  pokeActive = id;
   applyPokeBounds();
   view.setVisible(true);
-  pokeVisible = true;
   view.webContents.focus();
 }
 
 function hidePokeIdle() {
-  if (pokeOpen()) pokeView.setVisible(false);
-  pokeVisible = false;
+  for (const v of pokeViews.values()) if (!v.webContents.isDestroyed()) v.setVisible(false);
+  pokeActive = null;
 }
 
-function closePokeIdle() {
-  const view = pokeView;
-  pokeView = null;
-  pokeVisible = false;
-  if (!view) return;
-  try { mainWin.contentView.removeChildView(view); } catch {}
-  try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch {}
+function closePokeIdle(id = POKE_MAIN) {
+  const view = pokeViews.get(id);
+  pokeViews.delete(id);
+  if (pokeActive === id) pokeActive = null;
+  if (view) {
+    try { mainWin.contentView.removeChildView(view); } catch {}
+    try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch {}
+  }
   send('status', snapshot());
+}
+
+function pokeIdleSnapshot() {
+  const others = config.pokeBonusOthers || {};
+  return {
+    open: pokeOpen(), visible: !!pokeActive, active: pokeActive,
+    accounts: pokeAccountIds().map((id) => ({ id, label: pokeLabel(id), open: pokeIsOpen(id), bonus: id === POKE_MAIN ? null : (others[id] || null) })),
+    readAt: config.pokeReadAt || null,
+    source: { twitch: pokeBase('twitch').source || null, kick: pokeBase('kick').source || null },
+  };
 }
 
 // ---------- Extensões do Chrome no PokeIdle ----------
 // Extensões que a pessoa já usa no Chrome para o PokeIdle rodam também no jogo aberto no app.
 // O app lê a versão mais nova direto da pasta do Chrome (quando o Chrome atualiza, o app pega na
-// próxima vez que abrir) e carrega só na sessão do PokeIdle.
+// próxima vez que abrir) e carrega em cada sessão de conta do PokeIdle.
 const POKE_EXTENSIONS = [
   { id: 'mhnplloljgchpfpcpbhmcokmnefodjnh', name: '/hunt for PokeIdle' },
   { id: 'olccbpdjdkbfgondiiaicmlifhbcggmk', name: 'Rotom Sniper', cockpit: 'cockpit.html' },
 ];
-const loadedPokeExtensions = []; // { id, name, cockpit, extId }
+const loadedPokeExtensions = []; // { id, name, cockpit, extId, version } (da conta principal)
 
 function chromeExtensionDir(id) {
   const base = path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'User Data');
@@ -832,35 +869,45 @@ function chromeExtensionDir(id) {
   return null;
 }
 
-async function loadPokeExtensions() {
-  const ses = session.fromPartition(POKEIDLE_PARTITION);
+async function loadPokeExtensionsInto(partition) {
+  const ses = session.fromPartition(partition);
   const api = ses.extensions || ses; // Electron novo: ses.extensions; antigo: na própria sessão
   for (const ext of POKE_EXTENSIONS) {
     const dir = chromeExtensionDir(ext.id);
     if (!dir) continue;
     try {
       const loaded = await api.loadExtension(dir, { allowFileAccess: false });
-      loadedPokeExtensions.push({ ...ext, extId: loaded.id, version: loaded.version });
+      if (partition === POKEIDLE_PARTITION) loadedPokeExtensions.push({ ...ext, extId: loaded.id, version: loaded.version });
     } catch (e) {
-      if (process.env.KICKTERINO_DEBUG) console.log(`EXT falhou ${ext.name}: ${e.message}`);
+      if (process.env.KICKTERINO_DEBUG) console.log(`EXT falhou ${ext.name} em ${partition}: ${e.message}`);
     }
   }
   send('status', snapshot());
 }
+const loadPokeExtensions = () => preparePokeSession(POKE_MAIN);
 
 // O Cockpit do Rotom Sniper: no Chrome abre pelo ícone da extensão; aqui, pelo botão do painel.
+// Abre na sessão da conta do PokeIdle que estiver na tela (ou da principal).
 let cockpitWin = null;
-function openCockpit(id) {
+let cockpitAccount = null;
+async function openCockpit(id) {
   const ext = loadedPokeExtensions.find((e) => e.id === id && e.cockpit);
   if (!ext) return;
-  if (cockpitWin && !cockpitWin.isDestroyed()) { cockpitWin.show(); cockpitWin.focus(); return; }
+  const account = pokeActive || POKE_MAIN;
+  if (cockpitWin && !cockpitWin.isDestroyed()) {
+    if (cockpitAccount === account) { cockpitWin.show(); cockpitWin.focus(); return; }
+    cockpitWin.destroy();
+  }
+  await preparePokeSession(account).catch(() => {});
+  cockpitAccount = account;
   cockpitWin = new BrowserWindow({
-    width: 1160, height: 760, title: `${ext.name} — Cockpit`, autoHideMenuBar: true, backgroundColor: '#111',
+    width: 1160, height: 760, title: `${ext.name} — Cockpit (${pokeLabel(account)})`, autoHideMenuBar: true, backgroundColor: '#111',
     icon: path.join(__dirname, 'build', 'icon.png'),
-    webPreferences: { partition: POKEIDLE_PARTITION },
+    webPreferences: { partition: pokePartition(account) },
   });
   cockpitWin.loadURL(`chrome-extension://${ext.extId}/${ext.cockpit}`);
-  cockpitWin.on('closed', () => { cockpitWin = null; });
+  cockpitWin.on('page-title-updated', (e) => e.preventDefault());
+  cockpitWin.on('closed', () => { cockpitWin = null; cockpitAccount = null; });
 }
 
 // Relatório dos últimos 7 dias: pontos por dia, compras e tempo com bônus ativo por período.
@@ -1419,8 +1466,7 @@ function snapshot() {
     bonuses: activeBonuses(now, 'kick'),
     twitchBonuses: activeBonuses(now, 'twitch'),
     pokeExtensions: loadedPokeExtensions.map((e) => ({ id: e.id, name: e.name, version: e.version, cockpit: !!e.cockpit })),
-    pokeIdle: { open: pokeOpen(), visible: pokeOpen() && pokeVisible, readAt: config.pokeReadAt || null,
-      source: { twitch: pokeBase('twitch').source || null, kick: pokeBase('kick').source || null } },
+    pokeIdle: pokeIdleSnapshot(),
     purchases: [...config.purchases].sort((a, b) => b.t - a.t).slice(0, 6),
     storeSequence: storeSequence ? { done: storeSequence.done, total: storeSequence.total } : null,
     twitch: {
@@ -1724,10 +1770,26 @@ ipcMain.handle('bonus:set', (_e, platform, tipo, msLeft) => {
   updateTray();
   return snapshot();
 });
-ipcMain.handle('pokeidle:show', (_e, bounds) => { showPokeIdle(bounds); return snapshot(); });
+ipcMain.handle('pokeidle:show', async (_e, id, bounds) => { await showPokeIdle(id || POKE_MAIN, bounds); return snapshot(); });
 ipcMain.handle('pokeidle:hide', () => { hidePokeIdle(); return snapshot(); });
 ipcMain.handle('cockpit:open', (_e, id) => { openCockpit(id); });
-ipcMain.handle('pokeidle:close', () => { closePokeIdle(); return snapshot(); });
+ipcMain.handle('pokeidle:close', (_e, id) => { closePokeIdle(id || POKE_MAIN); return snapshot(); });
+// Conta nova do PokeIdle: só um nome; o login é feito na aba dela.
+ipcMain.handle('pokeidle:add', async (_e, name, bounds) => {
+  const id = String(name || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '').slice(0, 20);
+  if (!id || id === POKE_MAIN) return { ...snapshot(), error: 'Use só letras, números, - ou _ (até 20).' };
+  if (!pokeAccountIds().includes(id)) { config.pokeAccounts = [...(config.pokeAccounts || []), id]; saveConfig(); }
+  await showPokeIdle(id, bounds);
+  return { ...snapshot(), added: id };
+});
+// Tirar a aba de uma conta (o login dela fica guardado e volta se a conta for adicionada de novo).
+ipcMain.handle('pokeidle:remove', (_e, id) => {
+  if (id === POKE_MAIN) return snapshot();
+  closePokeIdle(id);
+  config.pokeAccounts = (config.pokeAccounts || []).filter((x) => x !== id);
+  saveConfig();
+  return snapshot();
+});
 ipcMain.on('pokeidle:bounds', (_e, bounds) => { pokeBounds = bounds; applyPokeBounds(); });
 ipcMain.handle('purchase:remove', (_e, t) => { config.purchases = config.purchases.filter((p) => p.t !== t); saveConfig(); updateTray(); return snapshot(); });
 ipcMain.handle('stores:sequence', (_e, slugs) => {

@@ -83,3 +83,8 @@ button:hover { border-color: var(--accent); }
 .account-new { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .account-new input:not([type]) { flex: 1 1 200px; padding: 6px 8px; }
 .account-msg { flex-basis: 100%; min-height: 16px; font-size: 12px; color: var(--accent); }
+
+/* Abas das contas do PokeIdle */
+.tab.poke-tab.closed { opacity: .55; border-style: dashed; }
+.tab.poke-add { color: #ffd27a; border-color: rgba(245, 165, 36, .5); }
+.tab.poke-add input { width: 150px; }
