@@ -158,3 +158,10 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
 /* Topo: só o ícone; nas alts, selinho com o nome da conta */
 .brand-name[hidden] { display: none !important; }
 .brand-name { font-size: 11px !important; padding: 1px 7px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, .25); -webkit-text-fill-color: #ddd; margin-right: 6px; }
+
+/* Ícones das plataformas no lugar das letras K/T */
+.plat { display: inline-flex !important; align-items: center; justify-content: center; background: none !important; padding: 0 !important; margin-right: 6px; vertical-align: -2px; }
+.plat svg { width: 14px; height: 14px; fill: currentColor; }
+.plat.twitch { color: #a970ff !important; }
+.plat.kick { color: #53fc18 !important; }
+#points-cols table.pts caption .plat svg, .bonus-col-head .plat svg { width: 15px; height: 15px; }

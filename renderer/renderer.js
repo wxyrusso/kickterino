@@ -92,6 +92,24 @@ function pushMessage(slug, node) {
   }
 }
 
+// Ícone de cada plataforma (logo da Kick e da Twitch), ao lado do nome do canal.
+const PLAT_SVG = {
+  twitch: 'M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z',
+  kick: 'M1.5 0h8v5.3h2.7V2.7h2.6V0h8v8h-2.6v2.7h-2.7v2.6h2.7V16h2.6v8h-8v-2.7h-2.6v-2.6H9.5V24h-8z',
+};
+function platIcon(platform) {
+  const span = el('span', `plat ${platform}`);
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  p.setAttribute('d', PLAT_SVG[platform]);
+  svg.append(p);
+  span.append(svg);
+  span.title = platform === 'twitch' ? 'Twitch' : 'Kick';
+  return span;
+}
+
 // ---------- Abas ----------
 function renderTabs() {
   const nav = $('#tabs');
@@ -115,7 +133,7 @@ function renderTabs() {
     const queued = ch.live && !ch.watching;
     const t = el('div', 'tab' + (ch.live ? ' live' : '') + (queued ? ' queued' : '') + (ch.ageGate ? ' age' : '') + (ch.slug === active && !pokeMode ? ' active' : '') + (ch.watching ? ' watching' : ''));
     if (favs.has(ch.slug)) t.append(el('span', 'fav-star', '★ '));
-    const plat = el('span', `plat ${ch.platform === 'twitch' ? 'twitch' : 'kick'}`, ch.platform === 'twitch' ? 'T' : 'K');
+    const plat = platIcon(ch.platform === 'twitch' ? 'twitch' : 'kick');
     plat.title = ch.platform === 'twitch' ? 'Canal da Twitch' : 'Canal da Kick';
     t.append(plat);
     const name = el('span', unread.has(ch.slug) && ch.slug !== active ? 'unread' : '', ch.displayName);
@@ -263,7 +281,7 @@ function renderPanel() {
   const groupLive = group.filter((c) => c.live).length;
   const th = table.querySelector('caption');
   th.replaceChildren();
-  th.append(el('span', `plat ${platform}`, platform === 'twitch' ? 'T' : 'K'),
+  th.append(platIcon(platform),
     el('b', null, platform === 'twitch' ? 'Twitch' : 'Kick'),
     el('span', 'plat-sum', ` · ${groupLive}/${group.length} ao vivo · `
       + (platform === 'twitch' && !group.some((c) => c.points != null) ? 'saldo aparece ao assistir' : `${group.some((c) => c.pointsApprox) ? '≈' : ''}${groupPts.toLocaleString('pt-BR')} pts`)));
@@ -401,7 +419,7 @@ function parseDuration(text) {
 function bonusColumn(platform, list, now) {
   const col = el('div', `bonus-col ${platform}`);
   const head = el('div', 'bonus-col-head');
-  head.append(el('span', `plat ${platform}`, platform === 'twitch' ? 'T' : 'K'), el('b', null, platform === 'twitch' ? 'Twitch' : 'Kick'));
+  head.append(platIcon(platform), el('b', null, platform === 'twitch' ? 'Twitch' : 'Kick'));
   const src = ((state.pokeIdle || {}).source || {})[platform];
   const readAt = (state.pokeIdle || {}).readAt;
   head.append(el('span', 'bonus-src', src === 'jogo' ? ` · lido do jogo${readAt ? ` ${timeStr(new Date(readAt))}` : ''}`
