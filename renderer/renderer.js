@@ -332,27 +332,94 @@ function etaText(ch) {
   return `⏱ ${clock(min * 60000)} → ${ch.goal.toLocaleString('pt-BR')}`;
 }
 
-function renderBonusBox() {
-  const box = $('#bonus-box');
-  box.replaceChildren();
-  const now = Date.now();
-  for (const b of state.bonuses || []) {
+// Tempo de bônus com dias: "3d 14h", "5h 20m", "12 min".
+const dclock = (ms) => {
+  const m = Math.max(0, Math.ceil(ms / 60000));
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60;
+  return d ? `${d}d ${h}h` : h ? `${h}h ${String(mm).padStart(2, '0')}m` : `${mm} min`;
+};
+// Lê "3d 14h", "2h49m", "90m", "1d" ou "2:30" (h:mm) em milissegundos; null se não entender.
+function parseDuration(text) {
+  const s = String(text || '').trim().toLowerCase().replace(',', '.');
+  if (!s) return null;
+  const hm = /^(\d+):(\d{1,2})$/.exec(s);
+  if (hm) return (Number(hm[1]) * 60 + Number(hm[2])) * 60000;
+  let total = 0, any = false;
+  const re = /(\d+(?:\.\d+)?)\s*(dias|dia|d|horas|hora|hrs|hr|h|minutos|minuto|mins|min|m)/g;
+  let m;
+  while ((m = re.exec(s))) {
+    any = true;
+    const n = Number(m[1]), u = m[2];
+    total += u.startsWith('d') ? n * 1440 : u.startsWith('h') ? n * 60 : n;
+  }
+  if (!any && /^\d+(\.\d+)?$/.test(s)) { total = Number(s) * 60; any = true; } // número sozinho = horas
+  return any ? Math.round(total * 60000) : null;
+}
+
+function bonusColumn(platform, list, now) {
+  const col = el('div', `bonus-col ${platform}`);
+  const head = el('div', 'bonus-col-head');
+  head.append(el('span', `plat ${platform}`, platform === 'twitch' ? 'T' : 'K'), el('b', null, platform === 'twitch' ? 'Twitch' : 'Kick'));
+  const src = ((state.pokeIdle || {}).source || {})[platform];
+  const readAt = (state.pokeIdle || {}).readAt;
+  head.append(el('span', 'bonus-src', src === 'jogo' ? ` · lido do jogo${readAt ? ` ${timeStr(new Date(readAt))}` : ''}`
+    : src === 'manual' ? ' · digitado' : platform === 'kick' ? ' · pelas compras' : ' · sem leitura'));
+  col.append(head);
+  for (const b of list || []) {
     const on = b.endsAt && b.endsAt > now;
     const chip = el('div', 'bonus-chip' + (on ? ' on' : ''));
-    chip.append(el('span', 'bonus-name', shortName(b.name)), el('span', 'bonus-left', on ? clock(b.endsAt - now) : 'inativo'));
+    const left = el('span', 'bonus-left editable', on ? dclock(b.endsAt - now) : 'inativo');
+    left.title = 'Clique para digitar quanto falta (ex.: 3d 14h, 2h 49m, 0 para zerar)';
+    left.onclick = () => {
+      const input = el('input', 'bonus-edit');
+      input.value = on ? dclock(b.endsAt - now) : '';
+      input.placeholder = 'ex.: 3d 14h';
+      left.replaceWith(input);
+      input.focus(); input.select();
+      let done = false;
+      const finish = async (commit) => {
+        if (done) return; done = true;
+        const ms = commit ? parseDuration(input.value) : null;
+        if (commit && ms == null && input.value.trim()) toast('Não entendi o tempo. Use algo como 3d 14h, 2h 49m ou 45m.');
+        if (ms != null) applyState(await window.kick.setBonus(platform, b.tipo, ms));
+        else renderBonusBox();
+      };
+      input.onkeydown = (e) => { if (e.key === 'Enter') finish(true); if (e.key === 'Escape') finish(false); };
+      input.onblur = () => finish(true);
+    };
+    chip.append(el('span', 'bonus-name', shortName(b.name)), left);
     const add = el('button', 'bonus-add', '+1h');
-    add.title = `Registrar uma compra de ${b.name} feita fora do app (o app percebe sozinho as compras pelo saldo)`;
-    add.onclick = async () => applyState(await window.kick.addPurchase(b.cost));
+    add.title = `Registrar 1 h de ${b.name} resgatada na ${platform === 'twitch' ? 'Twitch' : 'Kick'}`;
+    add.onclick = async () => applyState(await window.kick.addPurchase(b.cost, platform));
     chip.append(add);
-    box.append(chip);
+    col.append(chip);
   }
+  return col;
+}
+
+function renderBonusBox() {
+  const box = $('#bonus-box');
+  if (box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return; // editando
+  box.replaceChildren();
+  const now = Date.now();
+  const bar = el('div', 'poke-bar');
+  const open = (state.pokeIdle || {}).open;
+  const btn = el('button', 'poke-open', open ? '🎮 PokeIdle aberto' : '🎮 Abrir PokeIdle');
+  btn.title = 'Abre o jogo numa janela do Streamterino. Enquanto ele estiver aberto, o app lê sozinho o tempo do Bônus Twitch e do Bônus Kick. Jogue por essa janela: o PokeIdle só aceita uma sessão por conta.';
+  btn.onclick = async () => applyState(await window.kick.openPokeIdle());
+  bar.append(btn);
+  box.append(bar);
+  const cols = el('div', 'bonus-cols');
+  cols.append(bonusColumn('twitch', state.twitchBonuses, now), bonusColumn('kick', state.bonuses, now));
+  box.append(cols);
   const recent = state.purchases || [];
   if (recent.length) {
     const list = el('div', 'purchases');
     for (const p of recent) {
       const name = (BONUS_NAMES[p.cost] || `${p.cost} pts`);
       const ch = state.channels.find((c) => c.slug === p.slug);
-      const row = el('div', 'purchase', `${shortName(name)} · ${ch ? ch.displayName : 'registrado à mão'} · ${timeStr(new Date(p.t))}`);
+      const plat = (p.platform || 'kick') === 'twitch' ? 'Twitch' : 'Kick';
+      const row = el('div', 'purchase', `${shortName(name)} · ${plat} · ${ch ? ch.displayName : 'registrado à mão'} · ${timeStr(new Date(p.t))}`);
       const x = el('button', 'purchase-x', '✕');
       x.title = 'Não foi uma compra de bônus? Remove do cronômetro e do relatório';
       x.onclick = async () => applyState(await window.kick.removePurchase(p.t));

@@ -63,6 +63,8 @@ const DEFAULT_CONFIG = {
   twitchClientId: '',
   twitchClientSecret: '', // só para saber quem está ao vivo (token de app)
   twitchToken: '',        // token OAuth da pessoa (chat:read chat:edit), para enviar mensagens
+  pokeBonus: {},          // { twitch: { xp, captura, shiny, setAt, source }, kick: {...} } — fim de cada bônus
+  pokeReadAt: null,       // última leitura feita do jogo aberto no app
 };
 let config = { ...DEFAULT_CONFIG };
 let firstRun = false;
@@ -121,7 +123,7 @@ function isHiddenWatcher(webContents) {
 const ALLOWED_PERMISSIONS = new Set(['fullscreen', 'clipboard-sanitized-write']);
 
 function setupSession() {
-  for (const p of [PARTITION, TWITCH_PARTITION]) setupPartition(p);
+  for (const p of [PARTITION, TWITCH_PARTITION, POKEIDLE_PARTITION]) setupPartition(p);
 }
 function setupPartition(partition) {
   const ses = session.fromPartition(partition);
@@ -154,7 +156,7 @@ function lowestQualityOnly(playlist) {
 
 // Só a Kick e as páginas de login que ela usa abrem no app: nada de site de fora na mesma
 // sessão que guarda o login. Pop-ups de login abrem numa janela normal com a mesma sessão.
-const TRUSTED_DOMAINS = ['kick.com', 'google.com', 'accounts.youtube.com', 'apple.com', 'discord.com', 'twitch.tv'];
+const TRUSTED_DOMAINS = ['kick.com', 'google.com', 'accounts.youtube.com', 'apple.com', 'discord.com', 'twitch.tv', 'pokeidle.io'];
 const GOOGLE_REGIONAL = /^accounts\.google\.(com?\.)?[a-z]{2}$/; // o Google passa pelo domínio do país no login
 
 function isTrustedUrl(url) {
@@ -170,7 +172,8 @@ app.on('web-contents-created', (_e, wc) => {
   // O pop-up de login usa a mesma sessão da página que o abriu (Kick ou Twitch).
   wc.setWindowOpenHandler(({ url }) => (isTrustedUrl(url) ? {
     action: 'allow',
-    overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: { partition: wc.session === session.fromPartition(TWITCH_PARTITION) ? TWITCH_PARTITION : PARTITION } },
+    overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: { partition: wc.session === session.fromPartition(TWITCH_PARTITION) ? TWITCH_PARTITION
+      : wc.session === session.fromPartition(POKEIDLE_PARTITION) ? POKEIDLE_PARTITION : PARTITION } },
   } : { action: 'deny' }));
   const guard = (details) => { if (details.isMainFrame && !isTrustedUrl(details.url)) details.preventDefault(); };
   wc.on('will-navigate', guard);
@@ -454,29 +457,124 @@ function bonusIntervals(purchases = config.purchases) {
   return byCost;
 }
 
-function activeBonuses(now = Date.now()) {
-  const byCost = bonusIntervals();
-  return BONUSES.map((b) => {
-    const cur = (byCost[b.cost] || []).find((i) => i.start <= now && i.end > now);
-    return { cost: b.cost, name: b.name, endsAt: cur ? cur.end : null };
-  });
+// ---------- Bônus do PokeIdle por plataforma (Twitch e Kick) ----------
+// O jogo guarda, para cada plataforma, o instante em que cada bônus acaba
+// (estado.eu.twitch.bonus / estado.eu.kick.bonus = { xp, captura, shiny }).
+// Fontes, da mais confiável para a menos:
+//  1. lido do jogo aberto na janela do PokeIdle do app (ou digitado à mão): config.pokeBonus;
+//  2. compras percebidas depois disso (queda do saldo na Kick, ou "+1h" à mão).
+const POKE_TIPOS = ['xp', 'captura', 'shiny']; // mesma ordem de BONUSES (300, 500, 1.000)
+const PLATFORMS = ['twitch', 'kick'];
+const pokeBase = (platform) => ((config.pokeBonus || {})[platform] || {});
+
+function bonusEnd(platform, i, now) {
+  const base = pokeBase(platform);
+  const since = Number(base.setAt) || 0;
+  let end = Number(base[POKE_TIPOS[i]]) || 0;
+  const buys = config.purchases
+    .filter((p) => (p.platform || 'kick') === platform && p.cost === BONUSES[i].cost && p.t > since)
+    .sort((a, b) => a.t - b.t);
+  for (const p of buys) end = Math.max(end, p.t) + BONUS_MS;
+  return end > now ? end : null;
+}
+
+function activeBonuses(now = Date.now(), platform = 'kick') {
+  return BONUSES.map((b, i) => ({ cost: b.cost, name: b.name, tipo: POKE_TIPOS[i], endsAt: bonusEnd(platform, i, now) }));
+}
+
+// Valores lidos do jogo (ou digitados): passam a ser a referência daquela plataforma.
+function setPokeBonus(platform, values, source) {
+  if (!PLATFORMS.includes(platform)) return;
+  const now = Date.now();
+  const cur = { ...pokeBase(platform) };
+  // Guarda primeiro o fim atual de TODOS (com as compras já somadas): mudar um bônus não apaga os outros.
+  POKE_TIPOS.forEach((tipo, i) => { cur[tipo] = bonusEnd(platform, i, now) || 0; });
+  for (const tipo of POKE_TIPOS) if (tipo in values) cur[tipo] = Number(values[tipo]) || 0;
+  cur.setAt = now;
+  cur.source = source;
+  config.pokeBonus = { ...(config.pokeBonus || {}), [platform]: cur };
+  configDirty = true;
 }
 
 // Aviso 5 min antes de cada bônus acabar (uma vez por fim de bônus).
 const warnedEnds = new Set();
 function checkBonusEnding() {
   const now = Date.now();
-  for (const b of activeBonuses(now)) {
-    if (!b.endsAt || b.endsAt - now > 5 * 60 * 1000 || warnedEnds.has(`${b.cost}:${b.endsAt}`)) continue;
-    warnedEnds.add(`${b.cost}:${b.endsAt}`);
-    if (!config.notifyBonus) continue;
-    // Sugere o canal com mais pontos que ainda paga esse bônus.
-    const rich = config.channels.map((slug) => [slug, status.get(slug) || {}])
-      .filter(([, s]) => (s.points || 0) >= b.cost).sort((x, y) => y[1].points - x[1].points)[0];
-    notify(`Seu ${b.name} acaba em ${Math.max(1, Math.round((b.endsAt - now) / 60000))} min`,
-      rich ? `${rich[1].displayName || rich[0]} tem ${rich[1].points} pts. Clique para abrir a loja.` : 'Nenhum canal tem pontos para renovar agora.',
-      () => (rich ? openStore(rich[0]) : showMain()));
+  for (const platform of PLATFORMS) {
+    const label = platform === 'twitch' ? 'Twitch' : 'Kick';
+    for (const b of activeBonuses(now, platform)) {
+      const key = `${platform}:${b.cost}:${b.endsAt}`;
+      if (!b.endsAt || b.endsAt - now > 5 * 60 * 1000 || warnedEnds.has(key)) continue;
+      warnedEnds.add(key);
+      if (!config.notifyBonus) continue;
+      // Sugere o canal da mesma plataforma com mais pontos que ainda paga esse bônus.
+      const rich = config.channels.filter((slug) => platformOf(slug) === platform)
+        .map((slug) => [slug, status.get(slug) || {}])
+        .filter(([, s]) => (s.points || 0) >= b.cost).sort((x, y) => y[1].points - x[1].points)[0];
+      notify(`Seu ${b.name} (${label}) acaba em ${Math.max(1, Math.round((b.endsAt - now) / 60000))} min`,
+        rich ? `${rich[1].displayName || rich[0]} tem ${rich[1].points} pts. Clique para abrir a loja.`
+          : `Abra a loja de um canal da ${label} para renovar.`,
+        () => (rich ? openStore(rich[0]) : showMain()));
+    }
   }
+}
+
+// ---------- Janela do PokeIdle ----------
+// O jogo só aceita UMA sessão por conta: o app não abre o jogo escondido (derrubaria o seu).
+// Ele abre o jogo numa janela normal, onde a pessoa joga, e lê os bônus das mensagens que o
+// próprio jogo recebe pelo WebSocket dele.
+const POKEIDLE_URL = 'https://pokeidle.io/app';
+const POKEIDLE_PARTITION = 'persist:pokeidle';
+let pokeWin = null;
+
+// Procura, em qualquer lugar da mensagem, um bloco { twitch: { bonus } } ou { kick: { bonus } }.
+function findPokeBonus(obj, depth = 0, out = {}) {
+  if (!obj || typeof obj !== 'object' || depth > 6) return out;
+  for (const platform of PLATFORMS) {
+    const blk = obj[platform];
+    if (blk && typeof blk === 'object' && blk.bonus && typeof blk.bonus === 'object' && !out[platform]) {
+      const vals = {};
+      for (const tipo of POKE_TIPOS) if (tipo in blk.bonus) vals[tipo] = Number(blk.bonus[tipo]) || 0;
+      if (Object.keys(vals).length) out[platform] = vals;
+    }
+  }
+  for (const v of Array.isArray(obj) ? obj : Object.values(obj)) {
+    if (v && typeof v === 'object') findPokeBonus(v, depth + 1, out);
+  }
+  return out;
+}
+
+function openPokeIdle() {
+  if (pokeWin && !pokeWin.isDestroyed()) { if (pokeWin.isMinimized()) pokeWin.restore(); pokeWin.show(); pokeWin.focus(); return; }
+  pokeWin = new BrowserWindow({
+    width: 1366, height: 820, title: 'PokeIdle', autoHideMenuBar: true, backgroundColor: '#1b1b1b',
+    icon: path.join(__dirname, 'build', 'icon.png'),
+    webPreferences: { partition: POKEIDLE_PARTITION, backgroundThrottling: false },
+  });
+  const dbg = pokeWin.webContents.debugger;
+  try { dbg.attach('1.3'); } catch {}
+  dbg.on('message', (_e, method, p) => {
+    if (method !== 'Network.webSocketFrameReceived') return;
+    const text = p.response && p.response.payloadData;
+    // Só mensagens que falam de twitch/kick (o jogo manda muita coisa por segundo).
+    if (!text || text.length > 2_000_000 || !/"(twitch|kick)"/.test(text) || !text.includes('"bonus"')) return;
+    let msg;
+    try { msg = JSON.parse(text); } catch { return; }
+    const found = findPokeBonus(msg);
+    let changed = false;
+    for (const platform of Object.keys(found)) { setPokeBonus(platform, found[platform], 'jogo'); changed = true; }
+    if (changed) {
+      config.pokeReadAt = Date.now();
+      saveConfig(); configDirty = false;
+      send('status', snapshot());
+      updateTray();
+    }
+  });
+  dbg.sendCommand('Network.enable').catch(() => {});
+  pokeWin.loadURL(POKEIDLE_URL);
+  pokeWin.on('page-title-updated', (e) => e.preventDefault());
+  pokeWin.on('closed', () => { pokeWin = null; send('status', snapshot()); });
+  send('status', snapshot());
 }
 
 // Relatório dos últimos 7 dias: pontos por dia, compras e tempo com bônus ativo por período.
@@ -926,7 +1024,10 @@ function snapshot() {
     username,
     version: app.getVersion(),
     intro: config.lastSeenVersion === app.getVersion() ? null : (firstRun ? 'welcome' : 'news'),
-    bonuses: activeBonuses(now),
+    bonuses: activeBonuses(now, 'kick'),
+    twitchBonuses: activeBonuses(now, 'twitch'),
+    pokeIdle: { open: !!pokeWin && !pokeWin.isDestroyed(), readAt: config.pokeReadAt || null,
+      source: { twitch: pokeBase('twitch').source || null, kick: pokeBase('kick').source || null } },
     purchases: [...config.purchases].sort((a, b) => b.t - a.t).slice(0, 6),
     storeSequence: storeSequence ? { done: storeSequence.done, total: storeSequence.total } : null,
     twitch: {
@@ -1069,7 +1170,8 @@ function updateTray() {
   if (!tray) return;
   const gained = sumGained();
   const now = Date.now();
-  const active = activeBonuses(now).filter((b) => b.endsAt).map((b) => `${b.name.replace('+15% ', '')} ${clock(b.endsAt - now)}`);
+  const active = PLATFORMS.flatMap((pl) => activeBonuses(now, pl).filter((b) => b.endsAt)
+    .map((b) => `${pl === 'twitch' ? 'T' : 'K'} ${b.name.replace('+15% ', '')} ${clock(b.endsAt - now)}`));
   tray.setToolTip(`Streamterino — ${config.farming ? `${watchers.size} assistindo` : 'farm pausado'}${gained ? ` · +${gained} pts` : ''}`
     + (active.length ? `\nBônus ativo: ${active.join(' · ')}` : ''));
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -1141,11 +1243,24 @@ ipcMain.handle('favorite:toggle', (_e, slug) => {
   saveConfig();
   return snapshot();
 });
-ipcMain.handle('purchase:add', (_e, cost) => {
-  if (BONUSES.some((b) => b.cost === cost)) { config.purchases.push({ t: Date.now(), cost, slug: null }); saveConfig(); }
+ipcMain.handle('purchase:add', (_e, cost, platform = 'kick') => {
+  if (BONUSES.some((b) => b.cost === cost) && PLATFORMS.includes(platform)) {
+    config.purchases.push({ t: Date.now(), cost, slug: null, platform }); saveConfig();
+  }
   updateTray();
   return snapshot();
 });
+// Tempo que falta digitado à mão (ms); 0 zera o bônus.
+ipcMain.handle('bonus:set', (_e, platform, tipo, msLeft) => {
+  const ms = Math.max(0, Math.min(60 * DAY_MS, Number(msLeft) || 0));
+  if (PLATFORMS.includes(platform) && POKE_TIPOS.includes(tipo)) {
+    setPokeBonus(platform, { [tipo]: ms ? Date.now() + ms : 0 }, 'manual');
+    saveConfig(); configDirty = false;
+  }
+  updateTray();
+  return snapshot();
+});
+ipcMain.handle('pokeidle:open', () => { openPokeIdle(); return snapshot(); });
 ipcMain.handle('purchase:remove', (_e, t) => { config.purchases = config.purchases.filter((p) => p.t !== t); saveConfig(); updateTray(); return snapshot(); });
 ipcMain.handle('stores:sequence', (_e, slugs) => {
   const queue = (Array.isArray(slugs) ? slugs : []).filter((s) => config.channels.includes(s));
