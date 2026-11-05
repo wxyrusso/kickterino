@@ -75,3 +75,7 @@ button:disabled { opacity: .5; cursor: default; }
 .twitch-msg { min-height: 16px; font-size: 12px; color: #c9b6ff; }
 .msg .badge.founder { background: #7b4cff; }
 .msg .badge.staff, .msg .badge.partner { background: #9146ff; }
+
+/* Marca Streamterino: verde da Kick + roxo da Twitch */
+.brand { background: linear-gradient(135deg, #53fc18 0 50%, #9146ff 50% 100%) !important; color: #0e1014 !important; box-shadow: 0 0 16px rgba(145, 70, 255, .45) !important; }
+.brand-name { background: linear-gradient(90deg, #c9ffb0, #d9c4ff) !important; -webkit-background-clip: text !important; background-clip: text !important; color: transparent !important; }

@@ -1,8 +1,8 @@
 {
   "name": "kickterino",
-  "productName": "Kickterino",
+  "productName": "Streamterino",
   "version": "0.3.0",
-  "description": "Cliente multi-chat da Kick (estilo Chatterino) que mantém você assistindo várias lives para acumular pontos do canal.",
+  "description": "Cliente multi-chat da Kick e da Twitch (estilo Chatterino) que mantém você assistindo várias lives para acumular pontos do canal.",
   "author": "VinniiSaantos",
   "license": "MIT",
   "homepage": "https://viinnisantoos.github.io/kickterino/",
@@ -22,7 +22,7 @@
   },
   "build": {
     "appId": "com.vinniisaantos.kickterino",
-    "productName": "Kickterino",
+    "productName": "Streamterino",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -56,16 +56,16 @@
       "icon": "build/icon.png"
     },
     "nsis": {
-      "artifactName": "Kickterino-Setup.exe",
+      "artifactName": "Streamterino-Setup.exe",
       "oneClick": true,
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Kickterino",
+      "shortcutName": "Streamterino",
       "runAfterFinish": true
     },
     "portable": {
-      "artifactName": "Kickterino-portatil.exe"
+      "artifactName": "Streamterino-portatil.exe"
     },
     "linux": {
       "target": [
@@ -80,10 +80,10 @@
       "syncDesktopName": true
     },
     "appImage": {
-      "artifactName": "Kickterino-linux.AppImage"
+      "artifactName": "Streamterino-linux.AppImage"
     },
     "deb": {
-      "artifactName": "Kickterino-linux.deb"
+      "artifactName": "Streamterino-linux.deb"
     }
   },
   "desktopName": "kickterino.desktop"

@@ -1,4 +1,4 @@
-// Kickterino — processo principal.
+// Streamterino (antigo Kickterino) — processo principal.
 // Ideia: uma sessão de navegador persistente (você faz login na Kick uma vez),
 // uma janela oculta "api" em kick.com para consultar status/pontos, e uma janela
 // oculta e muda por canal AO VIVO tocando o player real — é isso que conta como "assistindo".
@@ -23,6 +23,8 @@ app.commandLine.appendSwitch('js-flags', '--max-semi-space-size=1');
 
 // Pasta de dados alternativa (testes sem mexer na instalação de verdade).
 if (process.env.KICKTERINO_DATA) app.setPath('userData', process.env.KICKTERINO_DATA);
+// O app agora se chama Streamterino, mas login, canais e histórico continuam na pasta antiga.
+else app.setPath('userData', path.join(app.getPath('appData'), 'Kickterino'));
 
 const PARTITION = 'persist:kick';
 const KICK = 'https://kick.com';
@@ -1045,7 +1047,7 @@ function setOpenAtLogin(on) {
   if (!on) return fs.rmSync(file, { force: true });
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const exe = process.env.APPIMAGE || process.execPath;
-  fs.writeFileSync(file, `[Desktop Entry]\nType=Application\nName=Kickterino\nExec="${exe}" --hidden\nIcon=kickterino\nX-GNOME-Autostart-enabled=true\n`);
+  fs.writeFileSync(file, `[Desktop Entry]\nType=Application\nName=Streamterino\nExec="${exe}" --hidden\nIcon=kickterino\nX-GNOME-Autostart-enabled=true\n`);
 }
 
 function showMain() {
@@ -1067,10 +1069,10 @@ function updateTray() {
   const gained = sumGained();
   const now = Date.now();
   const active = activeBonuses(now).filter((b) => b.endsAt).map((b) => `${b.name.replace('+15% ', '')} ${clock(b.endsAt - now)}`);
-  tray.setToolTip(`Kickterino — ${config.farming ? `${watchers.size} assistindo` : 'farm pausado'}${gained ? ` · +${gained} pts` : ''}`
+  tray.setToolTip(`Streamterino — ${config.farming ? `${watchers.size} assistindo` : 'farm pausado'}${gained ? ` · +${gained} pts` : ''}`
     + (active.length ? `\nBônus ativo: ${active.join(' · ')}` : ''));
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Abrir Kickterino', click: showMain },
+    { label: 'Abrir Streamterino', click: showMain },
     { label: 'Farmar pontos', type: 'checkbox', checked: config.farming, click: (item) => setFarming(item.checked) },
     { type: 'separator' },
     { label: 'Sair', click: quitApp },
@@ -1324,7 +1326,7 @@ app.whenReady().then(() => {
   loadConfig();
   setupSession();
   mainWin = new BrowserWindow({
-    width: 1100, height: 760, backgroundColor: '#1a1a1a', title: 'Kickterino',
+    width: 1100, height: 760, backgroundColor: '#1a1a1a', title: 'Streamterino',
     show: !process.argv.includes('--hidden'), // ao iniciar com o Windows, abre direto na bandeja
     icon: path.join(__dirname, 'build', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false },
@@ -1339,8 +1341,8 @@ app.whenReady().then(() => {
     if (!config.trayHintShown) {
       config.trayHintShown = true;
       saveConfig();
-      notify('O Kickterino continua farmando', isLinux
-        ? 'Ele fica na bandeja do sistema. Se o ícone não aparecer, abra o Kickterino de novo pelo menu de apps. Para sair de vez, use o botão Sair.'
+      notify('O Streamterino continua farmando', isLinux
+        ? 'Ele fica na bandeja do sistema. Se o ícone não aparecer, abra o Streamterino de novo pelo menu de apps. Para sair de vez, use o botão Sair.'
         : 'Ele fica na bandeja, perto do relógio. Para sair de vez: botão direito no ícone > Sair.', showMain);
     }
   });

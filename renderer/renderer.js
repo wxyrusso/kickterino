@@ -1,4 +1,4 @@
-// Kickterino — interface (abas estilo Chatterino). O chat chega do processo principal,
+// Streamterino — interface (abas estilo Chatterino). O chat chega do processo principal,
 // que o lê das janelas da live (só canais ao vivo que estão sendo assistidos).
 const MAX_MESSAGES = 400;
 
@@ -409,7 +409,7 @@ async function showReport() {
   const r = await window.kick.getReport();
   const card = el('div', 'report');
   const head = el('div', 'report-head');
-  head.append(el('span', 'brand', 'K'), el('b', null, ' Kickterino · minha semana'), el('span', 'report-date', new Date().toLocaleDateString('pt-BR')));
+  head.append(el('span', 'brand', 'S'), el('b', null, ' Streamterino · minha semana'), el('span', 'report-date', new Date().toLocaleDateString('pt-BR')));
   const big = el('div', 'report-big');
   const stat = (value, label) => { const d = el('div', 'report-stat'); d.append(el('b', null, value), el('span', null, label)); return d; };
   big.append(stat(r.gained.toLocaleString('pt-BR'), 'pontos ganhos'), stat(String(r.bought.reduce((t, b) => t + b.count, 0)), 'bônus comprados'),
@@ -450,7 +450,7 @@ async function showReport() {
 function showIntro(kind) {
   const wrap = el('div', 'intro');
   if (kind === 'welcome') {
-    wrap.append(el('h3', null, 'Bem-vindo ao Kickterino 👋'));
+    wrap.append(el('h3', null, 'Bem-vindo ao Streamterino 👋'));
     const steps = [
       ['1. Faça login', 'Clique em Login Kick e entre com sua conta (e-mail, Google, Apple ou Discord).'],
       ['2. Escolha seu bônus', 'Em Bônus, deixe Automático ou escolha XP, Capture Boost ou Secret Lure.'],
