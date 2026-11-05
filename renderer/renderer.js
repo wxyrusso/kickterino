@@ -710,11 +710,46 @@ $('#rotation').onchange = async (e) => applyState(await window.kick.setRotation(
 $('#bonus-target').onchange = async (e) => applyState(await window.kick.setBonusTarget(Number(e.target.value)));
 $('#low-quality').onchange = async (e) => applyState(await window.kick.setLowQuality(e.target.checked));
 $('#max-watchers').onchange = async (e) => applyState(await window.kick.setMaxWatchers(e.target.value));
-$('#btn-panel').onclick = () => {
+function togglePanel() {
   const p = $('#panel');
   p.hidden = !p.hidden;
   $('#btn-panel').textContent = p.hidden ? 'Pontos ▸' : 'Pontos ◂';
-};
+}
+$('#btn-panel').onclick = togglePanel;
+
+// ---------- Divisória: tamanho do jogo/chat x painel ----------
+// O jogo é desenhado por cima da página e "rouba" o mouse: some durante o arraste e volta no fim.
+const PANEL_MIN = 300;
+const CHAT_MIN = 320;
+function setPanelWidth(w) {
+  const max = Math.max(PANEL_MIN, innerWidth - CHAT_MIN);
+  const width = Math.round(Math.min(max, Math.max(PANEL_MIN, w)));
+  $('#panel').style.width = `${width}px`;
+  return width;
+}
+try { const saved = Number(localStorage.getItem('panelWidth')); if (saved) setPanelWidth(saved); } catch {}
+$('#splitter').addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  if ($('#panel').hidden) return; // painel escondido: dois cliques mostram
+  const wasPoke = pokeMode;
+  if (wasPoke) window.kick.hidePokeIdle();
+  $('#splitter').classList.add('dragging');
+  document.body.classList.add('resizing');
+  const move = (ev) => setPanelWidth(innerWidth - ev.clientX);
+  const up = (ev) => {
+    removeEventListener('mousemove', move);
+    removeEventListener('mouseup', up);
+    $('#splitter').classList.remove('dragging');
+    document.body.classList.remove('resizing');
+    const width = setPanelWidth(innerWidth - ev.clientX);
+    try { localStorage.setItem('panelWidth', String(width)); } catch {}
+    if (wasPoke && pokeMode) requestAnimationFrame(() => window.kick.showPokeIdle(chatRect()));
+  };
+  addEventListener('mousemove', move);
+  addEventListener('mouseup', up);
+});
+$('#splitter').addEventListener('dblclick', () => togglePanel());
 $('#btn-points').onclick = () => active && window.kick.openStore(active);
 $('#btn-show').onclick = () => active && window.kick.showChannel(active);
 $('#btn-remove').onclick = async () => {
