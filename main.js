@@ -1,4 +1,4 @@
-// Streamterino (antigo Kickterino) — processo principal.
+// Terino (antigo Kickterino) — processo principal.
 // Ideia: uma sessão de navegador persistente (você faz login na Kick uma vez),
 // uma janela oculta "api" em kick.com para consultar status/pontos, e uma janela
 // oculta e muda por canal AO VIVO tocando o player real — é isso que conta como "assistindo".
@@ -26,8 +26,8 @@ app.commandLine.appendSwitch('js-flags', '--max-semi-space-size=1');
 // roda sozinha, com as próprias vagas de live; o atalho de cada alt passa o --conta.
 const ACCOUNT = (process.argv.find((a) => a.startsWith('--conta=')) || '').slice(8)
   .toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 20) || null;
-const APP_TITLE = ACCOUNT ? `Streamterino — ${ACCOUNT}` : 'Streamterino';
-// O app agora se chama Streamterino, mas login, canais e histórico continuam na pasta antiga.
+const APP_TITLE = ACCOUNT ? `Terino — ${ACCOUNT}` : 'Terino';
+// O app agora se chama Terino, mas login, canais e histórico continuam na pasta antiga.
 const MAIN_DATA = path.join(app.getPath('appData'), 'Kickterino');
 // Pasta de dados alternativa (testes sem mexer na instalação de verdade).
 if (process.env.KICKTERINO_DATA) app.setPath('userData', process.env.KICKTERINO_DATA);
@@ -1520,7 +1520,7 @@ function setOpenAtLogin(on) {
   if (!on) return fs.rmSync(file, { force: true });
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const exe = process.env.APPIMAGE || process.execPath;
-  fs.writeFileSync(file, `[Desktop Entry]\nType=Application\nName=Streamterino\nExec="${exe}" --hidden\nIcon=kickterino\nX-GNOME-Autostart-enabled=true\n`);
+  fs.writeFileSync(file, `[Desktop Entry]\nType=Application\nName=Terino\nExec="${exe}" --hidden\nIcon=kickterino\nX-GNOME-Autostart-enabled=true\n`);
 }
 
 function showMain() {
@@ -1815,7 +1815,7 @@ ipcMain.handle('chat:send', async (_e, { chatroomId, content }) => {
 // Só uma instância: abrir o atalho de novo traz a janela existente para frente.
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', showMain);
-// Identificador próprio: a barra de tarefas usa o ícone do Streamterino, não o do Kickterino instalado.
+// Identificador próprio: a barra de tarefas usa o ícone do Terino, não o do Kickterino instalado.
 app.setAppUserModelId(ACCOUNT ? `com.streamterino.app.${ACCOUNT}` : 'com.streamterino.app');
 
 app.whenReady().then(() => {
@@ -1829,6 +1829,19 @@ app.whenReady().then(() => {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
   mainWin.setMenuBarVisibility(false);
+  // Sem isto o Windows mostra na barra de tarefas (e ao fixar) o ícone do electron.exe, um átomo.
+  if (process.platform === 'win32') {
+    const ico = path.join(__dirname, 'build', 'streamterino-v2.ico');
+    const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+    mainWin.setAppDetails({
+      appId: ACCOUNT ? `com.streamterino.app.${ACCOUNT}` : 'com.streamterino.app',
+      appIconPath: fs.existsSync(ico) ? ico : path.join(__dirname, 'build', 'icon.ico'),
+      appIconIndex: 0,
+      relaunchCommand: app.isPackaged ? `"${exe}"${ACCOUNT ? ` --conta=${ACCOUNT}` : ''}`
+        : `"${exe}" "${app.getAppPath()}"${ACCOUNT ? ` --conta=${ACCOUNT}` : ''}`,
+      relaunchDisplayName: APP_TITLE,
+    });
+  }
   mainWin.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   // Fechar a janela não para o farm: o app continua na bandeja, perto do relógio.
   mainWin.on('close', (e) => {
@@ -1838,8 +1851,8 @@ app.whenReady().then(() => {
     if (!config.trayHintShown) {
       config.trayHintShown = true;
       saveConfig();
-      notify('O Streamterino continua farmando', isLinux
-        ? 'Ele fica na bandeja do sistema. Se o ícone não aparecer, abra o Streamterino de novo pelo menu de apps. Para sair de vez, use o botão Sair.'
+      notify('O Terino continua farmando', isLinux
+        ? 'Ele fica na bandeja do sistema. Se o ícone não aparecer, abra o Terino de novo pelo menu de apps. Para sair de vez, use o botão Sair.'
         : 'Ele fica na bandeja, perto do relógio. Para sair de vez: botão direito no ícone > Sair.', showMain);
     }
   });

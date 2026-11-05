@@ -1,6 +1,6 @@
-# Streamterino
+# Terino
 
-Cliente de chat para a **Kick e a Twitch** no estilo do [Chatterino](https://chatterino.com/), feito para a comunidade do PokeIdle. Ele mantém algumas lives em segundo plano, com o mínimo de memória e internet, para acumular pontos do canal e comprar bônus.
+Chat e farm de pontos para a **Kick e a Twitch**, feito para a comunidade do PokeIdle. Ele mantém algumas lives em segundo plano, com o mínimo de memória e internet, para acumular pontos do canal e comprar bônus.
 
 É um fork do [Kickterino](https://github.com/ViinniSantoos/kickterino), de VinniiSaantos, com suporte à Twitch.
 
@@ -57,7 +57,7 @@ Para adicionar canais da Twitch, use `twitch:canal` ou cole o link `twitch.tv/ca
 ## Segurança da conta
 
 - O login é feito na própria página da Kick, da Twitch, do Google, da Apple ou do Discord. O app não lê nem guarda a senha.
-- Não há servidor do Streamterino: as sessões, o Client Secret e o token da Twitch ficam só no seu PC.
+- Não há servidor do Terino: as sessões, o Client Secret e o token da Twitch ficam só no seu PC.
 - Só a Kick, a Twitch, o PokeIdle e as páginas de login abrem dentro do app. Outros sites são bloqueados, e nenhuma página acessa câmera, microfone ou localização.
 - **Sair da conta** apaga do app os dados de login da plataforma escolhida, mantendo a lista de canais e as preferências.
 - Nunca envie a pasta de dados do app nem o seu Client Secret para ninguém.

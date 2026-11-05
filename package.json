@@ -1,8 +1,8 @@
 {
   "name": "kickterino",
-  "productName": "Streamterino",
+  "productName": "Terino",
   "version": "0.3.0",
-  "description": "Cliente multi-chat da Kick e da Twitch (estilo Chatterino) que mantém você assistindo várias lives para acumular pontos do canal.",
+  "description": "Cliente multi-chat da Kick e da Twitch que mantém você assistindo várias lives para acumular pontos do canal.",
   "author": "VinniiSaantos",
   "license": "MIT",
   "homepage": "https://viinnisantoos.github.io/kickterino/",
@@ -22,7 +22,7 @@
   },
   "build": {
     "appId": "com.streamterino.app",
-    "productName": "Streamterino",
+    "productName": "Terino",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -39,7 +39,8 @@
       "twitch.js",
       "preload.js",
       "renderer/**/*",
-      "build/icon.png"
+      "build/icon.png",
+      "build/streamterino-v2.ico"
     ],
     "electronFuses": {
       "enableCookieEncryption": true,
@@ -56,16 +57,16 @@
       "icon": "build/icon.png"
     },
     "nsis": {
-      "artifactName": "Streamterino-Setup.exe",
+      "artifactName": "Terino-Setup.exe",
       "oneClick": true,
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Streamterino",
+      "shortcutName": "Terino",
       "runAfterFinish": true
     },
     "portable": {
-      "artifactName": "Streamterino-portatil.exe"
+      "artifactName": "Terino-portatil.exe"
     },
     "linux": {
       "target": [
@@ -80,10 +81,10 @@
       "syncDesktopName": true
     },
     "appImage": {
-      "artifactName": "Streamterino-linux.AppImage"
+      "artifactName": "Terino-linux.AppImage"
     },
     "deb": {
-      "artifactName": "Streamterino-linux.deb"
+      "artifactName": "Terino-linux.deb"
     }
   },
   "desktopName": "kickterino.desktop"
