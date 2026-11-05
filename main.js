@@ -1251,7 +1251,10 @@ function connectTwitchChat() {
 
 ipcMain.handle('twitch:setApi', async (_e, { clientId, clientSecret } = {}) => {
   const id = String(clientId || '').trim();
-  if (!/^[a-z0-9]{0,64}$/i.test(id)) return { ...snapshot(), error: 'Client ID inválido.' };
+  // Client ID e Client Secret da Twitch têm 30 letras/números: mais que isso costuma ser duas colagens juntas.
+  if (id && !/^[a-z0-9]{30}$/i.test(id)) return { ...snapshot(), error: `O Client ID deve ter 30 letras e números (este tem ${id.length}). Apague o campo inteiro e cole de novo só o Client ID.` };
+  const sec = String(clientSecret || '').trim();
+  if (sec && !/^[a-z0-9]{30}$/i.test(sec)) return { ...snapshot(), error: `O Client Secret deve ter 30 letras e números (este tem ${sec.length}). Apague o campo e cole de novo só o segredo.` };
   if (id !== config.twitchClientId) config.twitchToken = ''; // o token é do app antigo
   config.twitchClientId = id;
   if (clientSecret != null && String(clientSecret).trim()) config.twitchClientSecret = String(clientSecret).trim();
