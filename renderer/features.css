@@ -141,9 +141,9 @@ input.bonus-edit { width: 84px; padding: 2px 6px; font-size: 12px; }
 .tab.poke-tab .poke-close:hover { opacity: 1; color: #ff8a8a; }
 
 /* Divisória arrastável entre o jogo/chat e o painel */
-#splitter { flex: 0 0 6px; cursor: col-resize; background: var(--border, #22252e); transition: background .15s; }
+#splitter { flex: 0 0 12px; cursor: col-resize; background: var(--border, #22252e); transition: background .15s; display: flex; align-items: center; justify-content: center; color: #9aa0ad; font-size: 16px; line-height: 1; }
 #splitter:hover, #splitter.dragging { background: #9146ff; }
-#splitter:has(+ #panel[hidden]) { flex-basis: 4px; }
+#splitter:has(+ #panel[hidden]) { flex-basis: 12px; }
 body.resizing, body.resizing * { cursor: col-resize !important; user-select: none !important; }
 
 /* Painel estreito (divisória puxada para a direita): Twitch e Kick uma embaixo da outra */

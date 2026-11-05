@@ -731,7 +731,8 @@ try { const saved = Number(localStorage.getItem('panelWidth')); if (saved) setPa
 $('#splitter').addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   e.preventDefault();
-  if ($('#panel').hidden) return; // painel escondido: dois cliques mostram
+  // Painel escondido: arrastar faz ele aparecer, já no tamanho que o mouse indicar.
+  if ($('#panel').hidden) togglePanel();
   const wasPoke = pokeMode;
   if (wasPoke) window.kick.hidePokeIdle();
   $('#splitter').classList.add('dragging');
@@ -749,7 +750,7 @@ $('#splitter').addEventListener('mousedown', (e) => {
   addEventListener('mousemove', move);
   addEventListener('mouseup', up);
 });
-$('#splitter').addEventListener('dblclick', () => togglePanel());
+// Para esconder ou mostrar o painel de vez, use o botão "Pontos" no topo.
 $('#btn-points').onclick = () => active && window.kick.openStore(active);
 $('#btn-show').onclick = () => active && window.kick.showChannel(active);
 $('#btn-remove').onclick = async () => {
