@@ -19,15 +19,20 @@ function timeStr(d = new Date()) {
   return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
 
-// Converte "[emote:123:nome]" em imagens; o resto vira texto puro (sem innerHTML).
+// Converte "[emote:123:nome]" (Kick) e "[temote:id:nome]" (Twitch) em imagens; o resto vira
+// texto puro (sem innerHTML).
+const EMOTE_RE = /\[(emote|temote):([\w-]+):([^\]]*)\]/g;
+const emoteUrl = (kind, id) => (kind === 'temote'
+  ? `https://static-cdn.jtvnw.net/emoticons/v2/${id}/default/dark/1.0`
+  : `https://files.kick.com/emotes/${id}/fullsize`);
 function appendContent(parent, content) {
-  const re = /\[emote:(\d+):([^\]]*)\]/g;
+  const re = new RegExp(EMOTE_RE.source, 'g');
   let last = 0, m;
   while ((m = re.exec(content))) {
     if (m.index > last) parent.append(content.slice(last, m.index));
     const img = el('img', 'emote');
-    img.src = `https://files.kick.com/emotes/${m[1]}/fullsize`;
-    img.alt = img.title = m[2];
+    img.src = emoteUrl(m[1], m[2]);
+    img.alt = img.title = m[3];
     parent.append(img);
     last = re.lastIndex;
   }
@@ -36,9 +41,10 @@ function appendContent(parent, content) {
 
 // Menção ao seu nome e sorteios ganham destaque (e aviso, se a janela não estiver à vista).
 const GIVEAWAY = /\b(sorteio|sorteando|giveaway|!sorteio|!giveaway|!sortear)\b/i;
-function chatFlags(data) {
+function chatFlags(data, slug) {
   const text = String(data.content || '');
-  const me = state.username && state.username.toLowerCase();
+  const mine = String(slug).startsWith('twitch:') ? (state.twitch || {}).chatUser : state.username;
+  const me = mine && mine.toLowerCase();
   const mention = !!me && (data.sender && data.sender.username || '').toLowerCase() !== me
     && new RegExp(`(^|[^a-z0-9_])@?${me.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9_]|$)`, 'i').test(text);
   return { mention, giveaway: GIVEAWAY.test(text) };
@@ -97,13 +103,14 @@ function renderTabs() {
     const queued = ch.live && !ch.watching;
     const t = el('div', 'tab' + (ch.live ? ' live' : '') + (queued ? ' queued' : '') + (ch.ageGate ? ' age' : '') + (ch.slug === active ? ' active' : ''));
     if (favs.has(ch.slug)) t.append(el('span', 'fav-star', '★ '));
+    if (ch.platform === 'twitch') { const p = el('span', 'plat twitch', 'T'); p.title = 'Canal da Twitch'; t.append(p); }
     const name = el('span', unread.has(ch.slug) && ch.slug !== active ? 'unread' : '', ch.displayName);
     t.append(name);
     if (ch.subscribed) { const s = el('span', 'tab-sub', 'SUB'); s.title = 'Você é sub: pontos em dobro'; t.append(s); }
     if (ch.live) t.append(el('span', 'dot'));
-    t.title = !ch.live ? 'offline'
+    t.title = ch.liveUnknown ? 'Twitch: status ao vivo desconhecido (configure a API da Twitch)' : !ch.live ? 'offline'
       : `AO VIVO · ${ch.viewers} espectadores\n${ch.title}`
-        + (queued ? '\nNa fila: entra quando abrir uma vaga (o chat aparece quando estiver assistindo)' : '');
+        + (queued ? (ch.platform === 'twitch' ? '\nNa fila: entra quando abrir uma vaga' : '\nNa fila: entra quando abrir uma vaga (o chat aparece quando estiver assistindo)') : '');
     t.onclick = () => select(ch.slug);
     nav.append(t);
   }
@@ -111,11 +118,11 @@ function renderTabs() {
   add.title = 'Adicionar canal';
   add.onclick = () => {
     const input = el('input');
-    input.placeholder = 'nome do canal';
+    input.placeholder = 'canal da Kick ou twitch:canal';
     add.replaceChildren(input);
     input.focus();
     const done = async (commit) => {
-      if (commit && input.value.trim()) { state = await window.kick.addChannel(input.value); select(state.channels[state.channels.length - 1].slug); }
+      if (commit && input.value.trim()) { const res = await window.kick.addChannel(input.value); applyState(res); if (res.added) select(res.added); }
       renderTabs();
     };
     input.onkeydown = (e) => { if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); };
@@ -143,14 +150,17 @@ function renderHeader() {
   $('#btn-fav').textContent = fav ? '★' : '☆';
   $('#btn-fav').classList.toggle('on', fav);
   if (!ch) return;
-  title.append(el('b', null, ch.displayName), ch.live ? ` · AO VIVO · ${ch.viewers} · ${ch.title}` : ' · offline');
+  title.append(el('b', null, ch.displayName), ch.platform === 'twitch' ? ' (Twitch)' : '',
+    ch.liveUnknown ? ' · status desconhecido' : ch.live ? ` · AO VIVO · ${ch.viewers} · ${ch.title}` : ' · offline');
   if (ch.ageGate) {
     const warn = el('button', 'age-gate', '⚠ Canal +18: clique para confirmar a idade');
-    warn.title = 'A Kick pede confirmação de idade antes de tocar esta live. Sem isso, ela não conta pontos.';
+    warn.title = `A ${ch.platform === 'twitch' ? 'Twitch' : 'Kick'} pede confirmação de idade antes de tocar esta live. Sem isso, ela não conta pontos.`;
     warn.onclick = () => window.kick.showChannel(ch.slug);
     title.prepend(warn, ' ');
   }
-  $('#input').placeholder = ch.chatroomId ? `Enviar mensagem em ${ch.displayName}…` : 'Carregando canal…';
+  $('#input').placeholder = ch.platform === 'twitch' && !(state.twitch || {}).chatUser
+    ? 'Só leitura: conecte o chat no botão "Twitch" para enviar mensagens'
+    : ch.chatroomId ? `Enviar mensagem em ${ch.displayName}…` : 'Carregando canal…';
   const pts = $('#points-val');
   const text = ch.points != null ? ch.points.toLocaleString('pt-BR') : '—';
   if (pts.textContent !== text) {
@@ -217,8 +227,12 @@ function renderPanel() {
       : ch.earning === 'earning' ? el('span', 'pill watching', 'GANHANDO')
       : ch.earning === 'warming' ? el('span', 'pill warming', 'AQUECENDO')
       : ch.earning === 'idle' ? el('span', 'pill stalled', 'SEM PONTOS')
+      : ch.earning === 'watching' ? el('span', 'pill watching', 'ASSISTINDO')
+      : ch.liveUnknown ? el('span', 'pill', '?')
       : ch.live ? el('span', 'pill queue', state.rotation ? 'NA FILA' : 'SEM VAGA') : el('span', 'pill', 'offline');
     if (ch.earning === 'warming') st.title = 'A Kick dá a primeira contagem ~6–7 min depois que a live abre.';
+    if (ch.earning === 'watching') st.title = 'Na Twitch o app não lê o saldo: confira os pontos na loja do canal.';
+    if (ch.liveUnknown) st.title = 'Configure a API da Twitch para saber quem está ao vivo.';
     if (ch.earning === 'idle') st.title = 'Tocando há mais de 13 min sem o saldo subir. A Kick só conta ~2 lives por vez.';
     if (ch.live && ch.goalLeft != null && state.rotation) st.title = `${st.title || ''}\nFaltam ${ch.goalLeft} pts para ${ch.goal}`.trim();
     const tdStatus = el('td'); tdStatus.append(st);
@@ -227,7 +241,7 @@ function renderPanel() {
     if (ch.gained > 0) tdPts.append(' ', el('span', 'gain', `+${ch.gained}`));
     const eta = etaText(ch);
     if (eta) { const e = el('div', 'eta', eta); e.title = 'Previsão pelo ritmo da Kick: 10 pts a cada 5 min (20 para subs)'; tdPts.append(e); }
-    const tdName = el('td', null, ch.displayName);
+    const tdName = el('td', null, ch.platform === 'twitch' ? `${ch.displayName} (Twitch)` : ch.displayName);
     if (ch.following) { const f = el('span', 'follow', '♥'); f.title = 'Você segue este canal'; tdName.append(' ', f); }
     if (ch.subscribed) tdName.append(' ', subBadge());
     tr.append(tdName, tdStatus, tdPts, el('td', null, `${ch.watchedMin} min`));
@@ -238,7 +252,7 @@ function renderPanel() {
   renderLimitTest();
   renderBonusBox();
   $('#sleep-box').hidden = !state.sleepMode;
-  $('#summary').textContent = !state.loggedIn ? `${live} ao vivo · Faça login para farmar pontos` : `${live} ao vivo · ${watching} assistindo`
+  $('#summary').textContent = !state.loggedIn && !(state.twitch || {}).loggedIn ? `${live} ao vivo · Faça login para farmar pontos` : `${live} ao vivo · ${watching} assistindo`
     + (queued ? (state.rotation ? ` · ${queued} na fila (foco no próximo bônus)` : ` · ${queued} sem vaga`) : '')
     + ` · ${totalPts.toLocaleString('pt-BR')} pts`
     + (gained ? ` (+${gained.toLocaleString('pt-BR')} nesta sessão)` : '');
@@ -274,7 +288,14 @@ function applyState(s) {
   $('#memory').textContent = state.memoryMB ? `${state.memoryMB} MB` : '';
   $('#btn-login').textContent = state.loggedIn ? 'Conectado ✓' : 'Login Kick';
   $('#btn-login').classList.toggle('ok', !!state.loggedIn);
-  $('#btn-logout').hidden = !state.loggedIn;
+  const tw = state.twitch || {};
+  $('#btn-login-twitch').textContent = tw.loggedIn ? 'Twitch ✓' : 'Login Twitch';
+  $('#btn-login-twitch').classList.toggle('ok', !!tw.loggedIn);
+  $('#btn-twitch').classList.toggle('warn', !tw.api);
+  $('#btn-twitch').title = tw.api
+    ? (tw.chatUser ? `API configurada · chat conectado como ${tw.chatUser}` : 'API configurada · chat só leitura')
+    : 'Configure seu app da Twitch para ver quem está ao vivo e enviar mensagens';
+  $('#btn-logout').hidden = !state.loggedIn && !tw.loggedIn;
   if (document.activeElement !== $('#max-watchers')) $('#max-watchers').value = state.maxWatchers;
   renderTabs();
   renderHeader();
@@ -471,7 +492,7 @@ function chatAlert(slug, data, flags) {
     lastGiveawayAlert.set(slug, Date.now());
   }
   const n = new Notification(flags.mention ? `${data.sender.username} mencionou você em ${name}` : `🎉 Sorteio no chat de ${name}`,
-    { body: String(data.content || '').replace(/\[emote:\d+:([^\]]*)\]/g, '$1').slice(0, 140), icon: '../build/icon.png' });
+    { body: String(data.content || '').replace(new RegExp(EMOTE_RE.source, 'g'), '$3').slice(0, 140), icon: '../build/icon.png' });
   n.onclick = () => { window.focus(); select(slug); };
 }
 
@@ -528,7 +549,9 @@ function celebrate(prev, next) {
 }
 
 // ---------- Eventos ----------
-$('#btn-login').onclick = () => window.kick.showLogin();
+$('#btn-login').onclick = () => window.kick.showLogin('kick');
+$('#btn-login-twitch').onclick = () => window.kick.showLogin('twitch');
+$('#btn-twitch').onclick = () => { openModal('twitch'); renderTwitchModal(); };
 $('#btn-logout').onclick = async () => applyState(await window.kick.logout());
 $('#btn-refresh').onclick = async () => applyState(await window.kick.refresh());
 $('#farming').onchange = async (e) => applyState(await window.kick.setFarming(e.target.checked));
@@ -568,17 +591,53 @@ $('#composer').onsubmit = async (e) => {
   if (!ch || !ch.chatroomId || !text) return;
   input.value = '';
   const res = await window.kick.sendChat(ch.chatroomId, text);
-  if (!res.ok) pushMessage(ch.slug, systemMessage(`Falha ao enviar (${res.status}${res.message ? ': ' + res.message : ''}). Você fez login?`));
+  if (!res.ok) pushMessage(ch.slug, systemMessage(ch.platform === 'twitch' ? `Falha ao enviar: ${res.message}` : `Falha ao enviar (${res.status}${res.message ? ': ' + res.message : ''}). Você fez login?`));
 };
 
 window.kick.onStatus(applyState);
 window.kick.onSelect((slug) => select(slug));
 window.kick.onChat(({ slug, kind, data }) => {
   if (kind === 'message') {
-    const flags = chatFlags(data);
+    const flags = chatFlags(data, slug);
     pushMessage(slug, renderChat(data, flags));
     if (flags.mention || flags.giveaway) chatAlert(slug, data, flags);
   }
+  else if (kind === 'notice') pushMessage(slug, systemMessage(`ℹ ${data.text}`));
   else if (kind === 'reward') pushMessage(slug, systemMessage(`🎁 ${data.username} resgatou "${data.reward_title}"`));
 });
+window.kick.onToast((text) => toast(text));
+
+// ---------- Twitch: app do Developer Console e conexão do chat ----------
+function renderTwitchModal() {
+  const tw = state.twitch || {};
+  const wrap = el('div', 'twitch-modal');
+  wrap.append(el('h3', null, 'Twitch'));
+  wrap.append(el('p', null, 'O chat da Twitch já funciona só para leitura. Para saber quem está ao vivo (e farmar) e para enviar mensagens, crie um app seu em dev.twitch.tv/console/apps: categoria "Chat Bot", OAuth Redirect URL http://localhost, tipo "Confidential". Copie o Client ID e gere um Client Secret.'));
+  const id = el('input'); id.placeholder = 'Client ID'; id.value = tw.clientId || '';
+  const secret = el('input'); secret.type = 'password'; secret.placeholder = tw.api ? 'Client Secret (salvo; deixe vazio para manter)' : 'Client Secret';
+  const msg = el('div', 'twitch-msg', tw.statusError || '');
+  wrap.append(el('label', null, 'Client ID'), id, el('label', null, 'Client Secret'), secret, msg);
+  const actions = el('div', 'modal-actions');
+  actions.append(button('Salvar', 'primary', async () => {
+    msg.textContent = 'Salvando…';
+    const res = await window.kick.twitchSetApi({ clientId: id.value, clientSecret: secret.value });
+    applyState(res);
+    msg.textContent = res.error || res.twitch.statusError || 'Salvo. Status ao vivo atualizado.';
+  }));
+  if (tw.clientId) {
+    actions.append(tw.chatUser
+      ? button(`Desconectar chat (${tw.chatUser})`, null, async () => { applyState(await window.kick.twitchDisconnectChat()); renderTwitchModal(); })
+      : button('Conectar chat (enviar mensagens)', null, async () => {
+        msg.textContent = 'Autorize na janela da Twitch…';
+        const r = await window.kick.twitchConnectChat();
+        applyState(r.state);
+        renderTwitchModal();
+        $('.twitch-msg').textContent = r.message;
+      }));
+  }
+  actions.append(button('Fechar', null, closeModal));
+  wrap.append(actions);
+  $('#modal-card').replaceChildren(wrap);
+}
+
 window.kick.getState().then((s) => { applyState(s); if (active) select(active); });

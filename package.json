@@ -36,6 +36,7 @@
     ],
     "files": [
       "main.js",
+      "twitch.js",
       "preload.js",
       "renderer/**/*",
       "build/icon.png"

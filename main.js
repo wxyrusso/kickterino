@@ -8,6 +8,7 @@ const {
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
+const twitch = require('./twitch');
 
 // Mantém vídeos rodando mesmo com janelas ocultas/minimizadas.
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -25,6 +26,15 @@ if (process.env.KICKTERINO_DATA) app.setPath('userData', process.env.KICKTERINO_
 
 const PARTITION = 'persist:kick';
 const KICK = 'https://kick.com';
+// Twitch: sessão separada (cada plataforma tem a própria conta e as próprias vagas de live).
+const TWITCH_PARTITION = 'persist:twitch';
+const TWITCH = 'https://www.twitch.tv';
+
+// Canais da Kick ficam na lista como "slug" (como sempre); os da Twitch como "twitch:login".
+const platformOf = (key) => (String(key).startsWith('twitch:') ? 'twitch' : 'kick');
+const nameOf = (key) => String(key).replace(/^twitch:/, '');
+const partitionOf = (key) => (platformOf(key) === 'twitch' ? TWITCH_PARTITION : PARTITION);
+const channelUrl = (key) => (platformOf(key) === 'twitch' ? `${TWITCH}/${nameOf(key)}` : `${KICK}/${key}`);
 const POLL_MS = 60 * 1000;
 const PLAYER_CHECK_MS = 30 * 1000;
 
@@ -47,6 +57,10 @@ const DEFAULT_CONFIG = {
   favorites: [],
   purchases: [],     // bônus comprados: { t, cost, slug } (cronômetro e relatório)
   daily: {},         // pontos ganhos por dia: { 'AAAA-MM-DD': pts }
+  // App da própria pessoa no Twitch Developer Console (dev.twitch.tv/console/apps).
+  twitchClientId: '',
+  twitchClientSecret: '', // só para saber quem está ao vivo (token de app)
+  twitchToken: '',        // token OAuth da pessoa (chat:read chat:edit), para enviar mensagens
 };
 let config = { ...DEFAULT_CONFIG };
 let firstRun = false;
@@ -76,6 +90,7 @@ let mainWin = null;
 let apiWin = null;
 let apiReady = null;
 const watchers = new Map(); // slug -> BrowserWindow
+const allWatchers = watchers; // (reconcilePlatform usa um "watchers" só da plataforma)
 const status = new Map();   // slug -> { live, viewers, chatroomId, title, points, watchedMs, watchingSince, error }
 
 function send(channel, payload) {
@@ -104,7 +119,10 @@ function isHiddenWatcher(webContents) {
 const ALLOWED_PERMISSIONS = new Set(['fullscreen', 'clipboard-sanitized-write']);
 
 function setupSession() {
-  const ses = session.fromPartition(PARTITION);
+  for (const p of [PARTITION, TWITCH_PARTITION]) setupPartition(p);
+}
+function setupPartition(partition) {
+  const ses = session.fromPartition(partition);
   ses.setSpellCheckerEnabled(false);
   // Câmera, microfone, localização e afins: nenhuma página precisa disso aqui.
   ses.setPermissionRequestHandler((_wc, permission, cb) => cb(ALLOWED_PERMISSIONS.has(permission)));
@@ -134,7 +152,7 @@ function lowestQualityOnly(playlist) {
 
 // Só a Kick e as páginas de login que ela usa abrem no app: nada de site de fora na mesma
 // sessão que guarda o login. Pop-ups de login abrem numa janela normal com a mesma sessão.
-const TRUSTED_DOMAINS = ['kick.com', 'google.com', 'accounts.youtube.com', 'apple.com', 'discord.com'];
+const TRUSTED_DOMAINS = ['kick.com', 'google.com', 'accounts.youtube.com', 'apple.com', 'discord.com', 'twitch.tv'];
 const GOOGLE_REGIONAL = /^accounts\.google\.(com?\.)?[a-z]{2}$/; // o Google passa pelo domínio do país no login
 
 function isTrustedUrl(url) {
@@ -147,9 +165,10 @@ function isTrustedUrl(url) {
 }
 
 app.on('web-contents-created', (_e, wc) => {
+  // O pop-up de login usa a mesma sessão da página que o abriu (Kick ou Twitch).
   wc.setWindowOpenHandler(({ url }) => (isTrustedUrl(url) ? {
     action: 'allow',
-    overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: { partition: PARTITION } },
+    overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: { partition: wc.session === session.fromPartition(TWITCH_PARTITION) ? TWITCH_PARTITION : PARTITION } },
   } : { action: 'deny' }));
   const guard = (details) => { if (details.isMainFrame && !isTrustedUrl(details.url)) details.preventDefault(); };
   wc.on('will-navigate', guard);
@@ -199,9 +218,9 @@ function openStore(slug, title = `Pontos — ${slug}`) {
   win = new BrowserWindow({
     width: 420, height: 720, title, autoHideMenuBar: true, backgroundColor: '#0b0e0f',
     icon: path.join(__dirname, 'build', 'icon.png'),
-    webPreferences: { partition: PARTITION },
+    webPreferences: { partition: partitionOf(slug) },
   });
-  win.loadURL(`${KICK}/popout/${slug}/chat`);
+  win.loadURL(platformOf(slug) === 'twitch' ? `${TWITCH}/popout/${nameOf(slug)}/chat` : `${KICK}/popout/${slug}/chat`);
   win.on('page-title-updated', (e) => e.preventDefault()); // mantém o "(2 de 4)" do modo antes de dormir
   win.on('closed', () => {
     storeWindows.delete(slug);
@@ -257,6 +276,7 @@ function instrumentWatcher(slug, win) {
   const dbg = win.webContents.debugger;
   try { dbg.attach('1.3'); } catch { return; }
   const seen = new Set();
+  const isKick = platformOf(slug) === 'kick'; // na Twitch o chat vem do IRC, não da página
   dbg.on('message', async (_e, method, p) => {
     if (method === 'Fetch.requestPaused') {
       const pass = () => dbg.sendCommand('Fetch.continueRequest', { requestId: p.requestId }).catch(() => {});
@@ -273,7 +293,7 @@ function instrumentWatcher(slug, win) {
       } catch { pass(); }
       return;
     }
-    if (method !== 'Network.webSocketFrameReceived') return;
+    if (!isKick || method !== 'Network.webSocketFrameReceived') return;
     for (const line of p.response.payloadData.split('\n')) {
       let frame;
       try { frame = JSON.parse(line); } catch { continue; }
@@ -291,7 +311,7 @@ function instrumentWatcher(slug, win) {
       }
     }
   });
-  dbg.sendCommand('Network.enable').catch(() => {});
+  if (isKick) dbg.sendCommand('Network.enable').catch(() => {});
   dbg.sendCommand('Fetch.enable', { patterns: [{ urlPattern: '*.m3u8*', requestStage: 'Response' }] }).catch(() => {});
 }
 
@@ -318,17 +338,18 @@ function makeInvisible(win) {
 function startWatcher(slug) {
   if (watchers.has(slug)) return;
   const win = new BrowserWindow({
-    width: 480, height: 270, x: 0, y: 0, show: false, title: `Kick — ${slug}`, autoHideMenuBar: true,
+    width: 480, height: 270, x: 0, y: 0, show: false,
+    title: `${platformOf(slug) === 'twitch' ? 'Twitch' : 'Kick'} — ${nameOf(slug)}`, autoHideMenuBar: true,
     type: 'toolbar', skipTaskbar: true, focusable: false, opacity: 0,
     icon: path.join(__dirname, 'build', 'icon.png'),
-    webPreferences: { partition: PARTITION, backgroundThrottling: false, spellcheck: false },
+    webPreferences: { partition: partitionOf(slug), backgroundThrottling: false, spellcheck: false },
   });
   win.webContents.setAudioMuted(true);
   const wcId = win.webContents.id;
   watcherIds.add(wcId);
   win.on('closed', () => watcherIds.delete(wcId));
   instrumentWatcher(slug, win);
-  win.loadURL(`${KICK}/${slug}`);
+  win.loadURL(channelUrl(slug));
   makeInvisible(win);
   // Fechar a live aberta só a torna invisível de novo: volta para 160p, sem som e sem imagens.
   win.on('close', (e) => {
@@ -510,7 +531,80 @@ async function syncPartners() {
   } catch {}
 }
 
+// ---------- Twitch ----------
+// Chat: IRC oficial (só leitura sem token; com o token da pessoa, também envia).
+const twitchChat = new twitch.TwitchChat({
+  onMessage: (login, data) => send('chat', { slug: `twitch:${login}`, kind: 'message', data }),
+  onNotice: (login, text) => {
+    if (login) send('chat', { slug: `twitch:${login}`, kind: 'notice', data: { text } });
+    else send('toast', text);
+  },
+  onState: () => send('status', snapshot()),
+});
+let twitchUser = null;       // login da conta conectada ao chat (token OAuth)
+let twitchLoggedIn = false;  // sessão do site (as lives ocultas contam pontos para essa conta)
+let twitchStatusError = null;
+const twitchKeys = () => config.channels.filter((k) => platformOf(k) === 'twitch');
+const hasTwitchApi = () => !!(config.twitchClientId && config.twitchClientSecret);
+
+function syncTwitchChat() {
+  twitchChat.setChannels(twitchKeys().map(nameOf));
+}
+
+async function syncTwitchAuth() {
+  if (!config.twitchToken) { twitchUser = null; twitchChat.setAuth(null); return; }
+  try {
+    const info = await twitch.validateUserToken(net.fetch, config.twitchToken);
+    if (!info) { config.twitchToken = ''; saveConfig(); twitchUser = null; twitchChat.setAuth(null); return; }
+    twitchUser = info.login;
+    twitchChat.setAuth({ login: info.login, token: config.twitchToken });
+  } catch {} // sem internet: mantém o que tinha
+}
+
+async function twitchSessionLoggedIn() {
+  const cookies = await session.fromPartition(TWITCH_PARTITION).cookies.get({ url: TWITCH, name: 'auth-token' });
+  return !!(cookies[0] && cookies[0].value);
+}
+
+// Quem está ao vivo, pela API Helix (precisa do app da pessoa no Developer Console).
+async function refreshTwitch() {
+  const keys = twitchKeys();
+  for (const key of keys) {
+    const s = status.get(key) || { watchedMs: 0 };
+    s.displayName = s.displayName || nameOf(key);
+    s.chatroomId = key; // a interface usa isso para liberar o campo de mensagem
+    status.set(key, s);
+  }
+  if (!keys.length) return;
+  if (!hasTwitchApi()) {
+    twitchStatusError = 'Configure a API da Twitch para saber quem está ao vivo';
+    for (const key of keys) { const s = status.get(key); s.live = undefined; s.error = null; }
+    return;
+  }
+  try {
+    const live = await twitch.fetchLive(net.fetch, { clientId: config.twitchClientId, clientSecret: config.twitchClientSecret }, keys.map(nameOf));
+    twitchStatusError = null;
+    for (const key of keys) {
+      const s = status.get(key);
+      const info = live[nameOf(key).toLowerCase()];
+      const wasLive = s.live;
+      s.live = !!info;
+      if (wasLive === false && s.live && config.favorites.includes(key)) {
+        notify(`★ ${info.displayName} entrou ao vivo`, info.title || 'Clique para abrir o chat.', () => { showMain(); send('select', key); });
+      }
+      s.viewers = info ? info.viewers : 0;
+      s.title = info ? info.title : '';
+      if (info) s.displayName = info.displayName;
+      s.error = null;
+    }
+  } catch (e) {
+    twitchStatusError = `API da Twitch: ${e.message || e}`;
+    for (const key of keys) status.get(key).error = twitchStatusError;
+  }
+}
+
 async function refreshChannel(slug) {
+  if (platformOf(slug) === 'twitch') return; // a Twitch é consultada em lote (refreshTwitch)
   const s = status.get(slug) || { watchedMs: 0 };
   try {
     const { status: code, json } = await kickFetch(`/api/v2/channels/${slug}`);
@@ -565,10 +659,13 @@ async function checkPlayers() {
   for (const [slug, win] of watchers) {
     const s = status.get(slug);
     if (!s || win.isDestroyed() || userOpened.has(win)) continue;
+    const gateSelector = platformOf(slug) === 'twitch'
+      ? '[data-a-target="player-overlay-mature-accept"], [data-a-target="content-classification-gate-overlay-start-watching-button"]'
+      : '[data-testid="mature"]';
     const info = await withTimeout(win.webContents.executeJavaScript(`(() => {
       const v = document.querySelector('video');
       return {
-        gate: !!document.querySelector('[data-testid="mature"]'),
+        gate: !!document.querySelector(${JSON.stringify(gateSelector)}),
         visibility: document.visibilityState,
         video: v ? { paused: v.paused, time: Math.round(v.currentTime), height: v.videoHeight, ready: v.readyState } : null,
       };
@@ -590,6 +687,8 @@ const EARN_WINDOW_MS = 13 * 60 * 1000;
 function earningState(slug, now) {
   const s = status.get(slug) || {};
   if (!watchers.has(slug)) return null;
+  // Na Twitch o app não lê o saldo, então não dá para saber se está rendendo.
+  if (platformOf(slug) === 'twitch') return 'watching';
   if (s.lastGainAt && now - s.lastGainAt < EARN_WINDOW_MS) return 'earning';
   if (now - (s.watchingSince || now) < EARN_WINDOW_MS) return 'warming';
   return 'idle';
@@ -666,31 +765,43 @@ const isShown = (slug) => { const w = watchers.get(slug); return !!w && !w.isDes
 // Rodando direto, a página da Kick vai acumulando memória: renova a live de tempos em tempos.
 const RECYCLE_MS = 6 * 60 * 60 * 1000;
 
+// Kick e Twitch têm contas e limites separados: cada plataforma tem as próprias vagas.
 function reconcileWatchers() {
+  for (const platform of ['kick', 'twitch']) reconcilePlatform(platform);
+}
+
+function reconcilePlatform(platform) {
   const now = Date.now();
-  // Sem login a Kick não dá pontos: abrir live só gastaria memória.
-  const canFarm = config.farming && (loggedIn || process.env.KICKTERINO_ALLOW_ANON);
+  const mine = (slug) => platformOf(slug) === platform;
+  const watchers = new Map([...allWatchers].filter(([slug]) => mine(slug)));
+  // Sem login a plataforma não dá pontos: abrir live só gastaria memória.
+  const logged = platform === 'twitch' ? twitchLoggedIn : loggedIn;
+  const canFarm = config.farming && (logged || process.env.KICKTERINO_ALLOW_ANON);
   for (const slug of [...watchers.keys()]) {
     const s = status.get(slug);
     if (isShown(slug)) continue;
-    if (!canFarm || !config.channels.includes(slug) || (s && s.live === false)) stopWatcher(slug);
+    if (!canFarm || !config.channels.includes(slug) || (s && s.live === false)) { stopWatcher(slug); watchers.delete(slug); }
   }
   if (!canFarm) return;
+  // O teste de limite mexe só nas vagas da Kick.
+  const max = platform === 'twitch' && limitTest ? limitTest.prev.maxWatchers : config.maxWatchers;
+  const startWatcherHere = (slug) => { startWatcher(slug); watchers.set(slug, allWatchers.get(slug)); };
+  const stopWatcherHere = (slug) => { stopWatcher(slug); watchers.delete(slug); };
 
   // Vaga não pode ficar parada: com o limite de 2 lives, quem não rende cede o lugar.
   // Com mais vagas que isso, ficar sem ganhar é esperado, então não mexe.
   for (const slug of [...watchers.keys()]) {
     if (isShown(slug)) continue;
-    const idle = loggedIn && !limitTest && config.maxWatchers <= 2 && earningState(slug, now) === 'idle';
+    const idle = logged && !limitTest && max <= 2 && earningState(slug, now) === 'idle';
     const s = status.get(slug);
     if (idle && s) s.cooldownUntil = now + IDLE_COOLDOWN_MS; // senão voltaria na mesma hora
-    if (idle || turnTime(slug, now) >= RECYCLE_MS) stopWatcher(slug);
+    if (idle || turnTime(slug, now) >= RECYCLE_MS) stopWatcherHere(slug);
   }
 
   // Limite reduzido: libera primeiro quem está há mais tempo na vez.
   const rotatable = () => [...watchers.keys()].filter((slug) => !isShown(slug))
     .sort((a, b) => turnTime(b, now) - turnTime(a, now));
-  while (watchers.size > config.maxWatchers && rotatable().length) stopWatcher(rotatable()[0]);
+  while (watchers.size > max && rotatable().length) stopWatcherHere(rotatable()[0]);
 
   // Sem foco, as vagas seguem a ordem da lista de canais e ninguém troca de lugar.
   const focusInfo = (slug) => {
@@ -699,15 +810,15 @@ function reconcileWatchers() {
     return { points: s.points, cooling, sub: !!s.subscribed && !cooling };
   };
   const byGoal = (a, b) => compareGoal(focusInfo(a), focusInfo(b));
-  const waiting = config.channels.filter((slug) => !watchers.has(slug) && (status.get(slug) || {}).live);
+  const waiting = config.channels.filter((slug) => mine(slug) && !watchers.has(slug) && (status.get(slug) || {}).live);
   if (config.rotation) waiting.sort(byGoal);
-  while (watchers.size < config.maxWatchers && waiting.length) startWatcher(waiting.shift());
+  while (watchers.size < max && waiting.length) startWatcherHere(waiting.shift());
   if (!config.rotation) return;
 
   for (const slug of rotatable().sort((a, b) => byGoal(b, a))) {
     if (!waiting.length || !worthSwitching(focusInfo(waiting[0]), focusInfo(slug))) break;
-    stopWatcher(slug);
-    startWatcher(waiting.shift());
+    stopWatcherHere(slug);
+    startWatcherHere(waiting.shift());
   }
 }
 
@@ -722,7 +833,7 @@ const LIMIT_WARMUP_MS = (Number(process.env.KICKTERINO_LIMIT_WARMUP_MIN) || 8) *
 let limitTest = null;
 
 const sumGained = () => [...status.values()].reduce((t, s) => t + (s.gainedTotal || 0), 0);
-const liveCount = () => config.channels.filter((slug) => (status.get(slug) || {}).live).length;
+const liveCount = () => config.channels.filter((slug) => platformOf(slug) === 'kick' && (status.get(slug) || {}).live).length;
 
 function startLimitTest() {
   const all = Math.max(2, liveCount());
@@ -756,7 +867,7 @@ function advanceLimitTest() {
   const minutes = (now - limitTest.baselineAt) / 60000;
   const pts = sumGained() - limitTest.baseline;
   const result = {
-    lives: limitTest.steps[limitTest.i], playing: watchers.size, minutes: Math.round(minutes),
+    lives: limitTest.steps[limitTest.i], playing: [...watchers.keys()].filter((k) => platformOf(k) === 'kick').length, minutes: Math.round(minutes),
     pts, counting: Math.round((pts / (minutes * 2)) * 10) / 10,
   };
   limitTest.results.push(result);
@@ -816,11 +927,17 @@ function snapshot() {
     bonuses: activeBonuses(now),
     purchases: [...config.purchases].sort((a, b) => b.t - a.t).slice(0, 6),
     storeSequence: storeSequence ? { done: storeSequence.done, total: storeSequence.total } : null,
+    twitch: {
+      loggedIn: twitchLoggedIn, chatUser: twitchUser, chatConnected: twitchChat.connected,
+      api: hasTwitchApi(), clientId: config.twitchClientId, statusError: twitchStatusError,
+    },
     channels: config.channels.map((slug) => {
       const s = status.get(slug) || {};
       const watchedMs = (s.watchedMs || 0) + (s.watchingSince ? now - s.watchingSince : 0);
       return {
-        slug, displayName: s.displayName || slug, live: !!s.live, viewers: s.viewers || 0,
+        slug, platform: platformOf(slug), name: nameOf(slug),
+        displayName: s.displayName || nameOf(slug), live: !!s.live, liveUnknown: s.live === undefined && platformOf(slug) === 'twitch',
+        viewers: s.viewers || 0,
         title: s.title || '', chatroomId: s.chatroomId || null, points: s.points ?? null,
         watching: watchers.has(slug), ageGate: !!s.ageGate, earning: earningState(slug, now),
         following: s.following ?? null, subscribed: !!s.subscribed,
@@ -858,14 +975,26 @@ async function poll() {
   polling = true;
   pollStartedAt = startedAt;
   try {
+    // Twitch primeiro: não depende da página da Kick estar no ar.
+    try {
+      twitchLoggedIn = await twitchSessionLoggedIn();
+      syncTwitchChat();
+      await refreshTwitch();
+    } catch {}
     loggedIn = !!(await sessionToken());
-    await withTimeout(apiReady, 5 * 1000); // sem a página da Kick não há o que consultar agora
+    await withTimeout(apiReady, 5 * 1000).catch(() => {
+      // Kick fora do ar: as lives da Twitch seguem sendo organizadas mesmo assim.
+      reconcilePlatform('twitch');
+      send('status', snapshot());
+      throw new Error('kick indisponível');
+    });
     if (!loggedIn) username = null;
     else if (!username) username = await fetchUsername();
-    for (const slug of config.channels) await refreshChannel(slug);
+    const kickKeys = config.channels.filter((slug) => platformOf(slug) === 'kick');
+    for (const slug of kickKeys) await refreshChannel(slug);
     if (configDirty) { configDirty = false; saveConfig(); }
     // Nenhum canal respondeu: a página de consulta pode ter ficado velha, então renova.
-    if (config.channels.length && config.channels.every((slug) => (status.get(slug) || {}).error) && !apiWin.isVisible()) {
+    if (kickKeys.length && kickKeys.every((slug) => (status.get(slug) || {}).error) && !apiWin.isVisible()) {
       loadApi(LIGHT_URL);
     }
     advanceLimitTest();
@@ -974,14 +1103,27 @@ function setupAutoUpdate() {
 }
 
 ipcMain.handle('state:get', () => snapshot());
-ipcMain.handle('channels:add', async (_e, slug) => {
-  slug = String(slug || '').trim().toLowerCase().replace(/^https?:\/\/(www\.)?kick\.com\//, '').replace(/[^a-z0-9_-]/g, '');
-  if (slug && !config.channels.includes(slug)) { config.channels.push(slug); saveConfig(); poll(); }
-  return snapshot();
+// Aceita "canal" ou kick.com/canal (Kick) e "twitch:canal" ou twitch.tv/canal (Twitch).
+function parseChannelInput(input) {
+  const raw = String(input || '').trim().toLowerCase();
+  const tw = /^(?:twitch:|(?:https?:\/\/)?(?:www\.|m\.)?twitch\.tv\/)([a-z0-9_]{2,25})/.exec(raw);
+  if (tw) return `twitch:${tw[1]}`;
+  return raw.replace(/^(kick:|https?:\/\/(www\.)?kick\.com\/)/, '').replace(/[^a-z0-9_-]/g, '');
+}
+ipcMain.handle('channels:add', async (_e, input) => {
+  const slug = parseChannelInput(input);
+  if (slug && !config.channels.includes(slug)) {
+    config.channels.push(slug); saveConfig();
+    if (platformOf(slug) === 'twitch') {
+      syncTwitchChat();
+      refreshTwitch().then(() => { reconcileWatchers(); send('status', snapshot()); });
+    } else poll();
+  }
+  return { ...snapshot(), added: slug };
 });
 ipcMain.handle('channels:remove', (_e, slug) => {
   config.channels = config.channels.filter((c) => c !== slug);
-  stopWatcher(slug); status.delete(slug); saveConfig();
+  stopWatcher(slug); status.delete(slug); saveConfig(); syncTwitchChat();
   return snapshot();
 });
 ipcMain.handle('farming:set', (_e, on) => { setFarming(on); return snapshot(); });
@@ -1046,28 +1188,105 @@ ipcMain.handle('lowQuality:set', (_e, on) => {
   return snapshot();
 });
 ipcMain.handle('refresh', async () => { await poll(); return snapshot(); });
-ipcMain.handle('login:show', async () => {
+ipcMain.handle('login:show', async (_e, platform) => {
+  if (platform === 'twitch') return showTwitchLogin();
   apiWin.show(); apiWin.focus();
   await loadApi(`${KICK}/login`);
 });
+
+// Login no site da Twitch (sessão própria): é a conta que ganha os pontos das lives ocultas.
+let twitchLoginWin = null;
+function showTwitchLogin() {
+  if (twitchLoginWin && !twitchLoginWin.isDestroyed()) { twitchLoginWin.show(); twitchLoginWin.focus(); return; }
+  twitchLoginWin = new BrowserWindow({
+    width: 520, height: 760, title: 'Twitch — login', autoHideMenuBar: true,
+    icon: path.join(__dirname, 'build', 'icon.png'),
+    webPreferences: { partition: TWITCH_PARTITION },
+  });
+  twitchLoginWin.loadURL(`${TWITCH}/login`);
+  twitchLoginWin.on('closed', () => { twitchLoginWin = null; poll(); });
+}
+
+// Conectar o chat: fluxo OAuth implícito da Twitch com o app da própria pessoa
+// (redirect http://localhost cadastrado no Developer Console). O token só fica neste PC.
+const TWITCH_REDIRECT = 'http://localhost';
+let twitchAuthWin = null;
+function connectTwitchChat() {
+  if (!config.twitchClientId) return Promise.resolve({ ok: false, message: 'Informe o Client ID do seu app da Twitch primeiro.' });
+  if (twitchAuthWin && !twitchAuthWin.isDestroyed()) { twitchAuthWin.focus(); return Promise.resolve({ ok: false, message: 'Janela de autorização já aberta.' }); }
+  const state = require('crypto').randomBytes(16).toString('hex');
+  const url = 'https://id.twitch.tv/oauth2/authorize?' + new URLSearchParams({
+    client_id: config.twitchClientId, redirect_uri: TWITCH_REDIRECT, response_type: 'token',
+    scope: 'chat:read chat:edit', state, force_verify: 'true',
+  });
+  return new Promise((resolve) => {
+    const win = new BrowserWindow({
+      width: 520, height: 760, title: 'Twitch — autorizar chat', autoHideMenuBar: true,
+      icon: path.join(__dirname, 'build', 'icon.png'),
+      webPreferences: { partition: TWITCH_PARTITION },
+    });
+    twitchAuthWin = win;
+    let done = false;
+    const finish = (result) => { if (done) return; done = true; resolve(result); if (!win.isDestroyed()) win.close(); };
+    const check = async (target) => {
+      if (!target.startsWith(TWITCH_REDIRECT)) return;
+      const u = new URL(target);
+      const params = new URLSearchParams(u.hash.slice(1) || u.search.slice(1));
+      if (params.get('state') !== state) return finish({ ok: false, message: 'Resposta da Twitch inválida.' });
+      const token = params.get('access_token');
+      if (!token) return finish({ ok: false, message: params.get('error_description') || 'Autorização cancelada.' });
+      config.twitchToken = token;
+      saveConfig();
+      await syncTwitchAuth();
+      finish({ ok: !!twitchUser, message: twitchUser ? `Chat conectado como ${twitchUser}.` : 'Token recusado pela Twitch.' });
+    };
+    win.webContents.on('will-redirect', (_e, target) => check(target));
+    win.webContents.on('will-navigate', (_e, target) => check(target));
+    win.on('closed', () => { twitchAuthWin = null; finish({ ok: false, message: 'Autorização cancelada.' }); send('status', snapshot()); });
+    win.loadURL(url);
+  });
+}
+
+ipcMain.handle('twitch:setApi', async (_e, { clientId, clientSecret } = {}) => {
+  const id = String(clientId || '').trim();
+  if (!/^[a-z0-9]{0,64}$/i.test(id)) return { ...snapshot(), error: 'Client ID inválido.' };
+  if (id !== config.twitchClientId) config.twitchToken = ''; // o token é do app antigo
+  config.twitchClientId = id;
+  if (clientSecret != null && String(clientSecret).trim()) config.twitchClientSecret = String(clientSecret).trim();
+  if (!id) config.twitchClientSecret = '';
+  saveConfig();
+  await syncTwitchAuth();
+  await refreshTwitch();
+  reconcileWatchers();
+  return snapshot();
+});
+ipcMain.handle('twitch:connectChat', async () => ({ ...(await connectTwitchChat()), state: snapshot() }));
+ipcMain.handle('twitch:disconnectChat', async () => {
+  config.twitchToken = ''; saveConfig();
+  await syncTwitchAuth();
+  return snapshot();
+});
+
 // Sair da conta: apaga cookies, cache e tudo que as páginas guardaram, inclusive o login do
 // Google, Apple ou Discord. A lista de canais e as preferências ficam.
 ipcMain.handle('logout', async () => {
   const { response } = await dialog.showMessageBox(mainWin, {
-    type: 'question', buttons: ['Sair da conta', 'Cancelar'], defaultId: 1, cancelId: 1,
-    title: 'Sair da conta', message: 'Sair da conta da Kick neste PC?',
-    detail: 'Os dados de login salvos no app serão apagados. Para farmar de novo, será preciso entrar outra vez.',
+    type: 'question', buttons: ['Sair da Kick', 'Sair da Twitch', 'Cancelar'], defaultId: 2, cancelId: 2,
+    title: 'Sair da conta', message: 'De qual conta você quer sair neste PC?',
+    detail: 'Os dados de login salvos no app para essa plataforma serão apagados. Para farmar de novo, será preciso entrar outra vez.',
   });
-  if (response !== 0) return snapshot();
-  for (const slug of [...watchers.keys()]) stopWatcher(slug);
-  for (const win of storeWindows.values()) if (!win.isDestroyed()) win.close();
-  const ses = session.fromPartition(PARTITION);
+  if (response === 2) return snapshot();
+  const platform = response === 0 ? 'kick' : 'twitch';
+  for (const slug of [...watchers.keys()]) if (platformOf(slug) === platform) stopWatcher(slug);
+  for (const [slug, win] of storeWindows) if (platformOf(slug) === platform && !win.isDestroyed()) win.close();
+  const ses = session.fromPartition(platform === 'kick' ? PARTITION : TWITCH_PARTITION);
   await ses.clearStorageData();
   await ses.clearCache();
   await ses.clearAuthCache();
   ses.flushStorageData();
-  status.clear();
-  await loadApi(LIGHT_URL);
+  for (const key of [...status.keys()]) if (platformOf(key) === platform) status.delete(key);
+  if (platform === 'twitch') { config.twitchToken = ''; saveConfig(); await syncTwitchAuth(); }
+  else await loadApi(LIGHT_URL);
   await poll();
   return snapshot();
 });
@@ -1089,6 +1308,7 @@ ipcMain.handle('channel:show', (_e, slug) => {
   send('status', snapshot());
 });
 ipcMain.handle('chat:send', async (_e, { chatroomId, content }) => {
+  if (platformOf(chatroomId) === 'twitch') return twitchChat.send(nameOf(chatroomId), content);
   const { status: code, json } = await kickFetch(`/api/v2/messages/send/${chatroomId}`, {
     method: 'POST', body: { content, type: 'message' },
   });
@@ -1133,6 +1353,11 @@ app.whenReady().then(() => {
   powerMonitor.on('resume', recoverAfterResume);
   setupAutoUpdate();
   createApiWindow();
+  // O chat da Twitch não depende da página da Kick: conecta já.
+  syncTwitchAuth().finally(() => {
+    syncTwitchChat();
+    refreshTwitch().then(() => send('status', snapshot())).catch(() => {});
+  });
   apiReady.then(poll).then(() => {
     if (process.env.KICKTERINO_LIMIT_AUTOSTART) { startLimitTest(); reconcileWatchers(); }
   });
@@ -1143,5 +1368,5 @@ app.whenReady().then(() => {
   setInterval(syncPartners, 6 * 60 * 60 * 1000);
 });
 
-app.on('before-quit', () => { app.isQuitting = true; });
+app.on('before-quit', () => { app.isQuitting = true; twitchChat.close(); });
 app.on('window-all-closed', () => app.quit());
