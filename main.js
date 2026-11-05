@@ -46,8 +46,10 @@ const partitionOf = (key) => (platformOf(key) === 'twitch' ? TWITCH_PARTITION : 
 const channelUrl = (key) => (platformOf(key) === 'twitch' ? `${TWITCH}/${nameOf(key)}` : `${KICK}/${key}`);
 // Live escondida só com o player (sem chat, painéis e o resto do site): bem menos memória.
 // Twitch: o autor do Twitchterino mediu em 04/11/2026, com conta logada, ~220 MB contra ~440 MB por
-// live, os mesmos pontos e o baú aparecendo. Kick: opcional (config.kickWatchMode = 'player').
-const watchMode = (key) => (platformOf(key) === 'twitch' ? (config.twitchWatchMode || 'player') : (config.kickWatchMode || 'page'));
+// live, os mesmos pontos e o baú aparecendo. Kick: testado em 05/11/2026 na conta do usuário, os
+// pontos também sobem (~215 MB por live); o chat da Kick no app some (vinha da página).
+// Para voltar à página inteira: config.twitchWatchMode / config.kickWatchMode = 'page'.
+const watchMode = (key) => (platformOf(key) === 'twitch' ? (config.twitchWatchMode || 'player') : (config.kickWatchMode || 'player'));
 const watchUrl = (key) => {
   if (watchMode(key) !== 'player') return channelUrl(key);
   return platformOf(key) === 'twitch'
