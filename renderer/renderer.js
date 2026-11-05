@@ -101,7 +101,7 @@ function renderTabs() {
   const ordered = [...state.channels.filter((c) => favs.has(c.slug)), ...state.channels.filter((c) => !favs.has(c.slug))];
   for (const ch of ordered) {
     const queued = ch.live && !ch.watching;
-    const t = el('div', 'tab' + (ch.live ? ' live' : '') + (queued ? ' queued' : '') + (ch.ageGate ? ' age' : '') + (ch.slug === active ? ' active' : ''));
+    const t = el('div', 'tab' + (ch.live ? ' live' : '') + (queued ? ' queued' : '') + (ch.ageGate ? ' age' : '') + (ch.slug === active ? ' active' : '') + (ch.watching ? ' watching' : ''));
     if (favs.has(ch.slug)) t.append(el('span', 'fav-star', '★ '));
     const plat = el('span', `plat ${ch.platform === 'twitch' ? 'twitch' : 'kick'}`, ch.platform === 'twitch' ? 'T' : 'K');
     plat.title = ch.platform === 'twitch' ? 'Canal da Twitch' : 'Canal da Kick';
@@ -112,7 +112,8 @@ function renderTabs() {
     if (ch.live) t.append(el('span', 'dot'));
     t.title = ch.liveUnknown ? 'Twitch: status ao vivo desconhecido (configure a API da Twitch)' : !ch.live ? 'offline'
       : `AO VIVO · ${ch.viewers} espectadores\n${ch.title}`
-        + (queued ? (ch.platform === 'twitch' ? '\nNa fila: entra quando abrir uma vaga' : '\nNa fila: entra quando abrir uma vaga (o chat aparece quando estiver assistindo)') : '');
+        + (queued ? (ch.platform === 'twitch' ? '\nNa fila: entra quando abrir uma vaga' : '\nNa fila: entra quando abrir uma vaga (o chat aparece quando estiver assistindo)') : '')
+        + (ch.watching ? '\nAssistindo agora: o app está farmando pontos aqui' : '');
     t.onclick = () => select(ch.slug);
     nav.append(t);
   }

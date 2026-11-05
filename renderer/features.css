@@ -129,3 +129,7 @@ input.bonus-edit { width: 84px; padding: 2px 6px; font-size: 12px; }
 /* Nas colunas: nome | tempo | +1h | ↺ numa linha só */
 .bonus-col .bonus-chip { grid-template-columns: 1fr auto auto auto; gap: 6px; }
 .bonus-col .bonus-chip .bonus-reset { padding: 0 6px; margin: 0; }
+
+/* Aba do canal que o app está assistindo (farmando): contorno branco */
+.tab.watching { border-color: #fff !important; box-shadow: 0 0 0 1px rgba(255, 255, 255, .9), 0 0 12px rgba(255, 255, 255, .35); }
+.tab.watching.active { box-shadow: 0 0 0 1px #fff, 0 0 16px rgba(255, 255, 255, .45); }
