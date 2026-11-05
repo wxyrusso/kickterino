@@ -99,9 +99,21 @@ function renderTabs() {
   // Favoritos primeiro (só na tela: a ordem da lista, usada sem o foco em bônus, não muda).
   const favs = new Set(state.favorites || []);
   const ordered = [...state.channels.filter((c) => favs.has(c.slug)), ...state.channels.filter((c) => !favs.has(c.slug))];
+  // O PokeIdle aberto vira a primeira aba: o jogo aparece no lugar do chat.
+  if ((state.pokeIdle || {}).open) {
+    const t = el('div', 'tab poke-tab' + (pokeMode ? ' active' : ''));
+    t.append(el('span', null, '🎮 PokeIdle'));
+    const x = el('span', 'poke-close', '✕');
+    x.title = 'Fechar o PokeIdle (encerra a sessão do jogo no app)';
+    x.onclick = async (e) => { e.stopPropagation(); pokeMode = false; applyState(await window.kick.closePokeIdle()); };
+    t.append(x);
+    t.title = 'Jogo aberto dentro do app. Clique num canal para voltar ao chat; o jogo continua rodando.';
+    t.onclick = () => showPoke();
+    nav.append(t);
+  }
   for (const ch of ordered) {
     const queued = ch.live && !ch.watching;
-    const t = el('div', 'tab' + (ch.live ? ' live' : '') + (queued ? ' queued' : '') + (ch.ageGate ? ' age' : '') + (ch.slug === active ? ' active' : '') + (ch.watching ? ' watching' : ''));
+    const t = el('div', 'tab' + (ch.live ? ' live' : '') + (queued ? ' queued' : '') + (ch.ageGate ? ' age' : '') + (ch.slug === active && !pokeMode ? ' active' : '') + (ch.watching ? ' watching' : ''));
     if (favs.has(ch.slug)) t.append(el('span', 'fav-star', '★ '));
     const plat = el('span', `plat ${ch.platform === 'twitch' ? 'twitch' : 'kick'}`, ch.platform === 'twitch' ? 'T' : 'K');
     plat.title = ch.platform === 'twitch' ? 'Canal da Twitch' : 'Canal da Kick';
@@ -134,7 +146,28 @@ function renderTabs() {
   nav.append(add);
 }
 
+// ---------- PokeIdle no lugar do chat ----------
+let pokeMode = false;
+const chatRect = () => {
+  const r = $('#chat-col').getBoundingClientRect();
+  return { x: r.left, y: r.top, width: r.width, height: r.height };
+};
+async function showPoke() {
+  pokeMode = true;
+  renderTabs();
+  applyState(await window.kick.showPokeIdle(chatRect()));
+}
+function leavePoke() {
+  if (!pokeMode) return;
+  pokeMode = false;
+  window.kick.hidePokeIdle();
+}
+// A área do chat muda de tamanho (janela, painel de pontos, abas em mais linhas): o jogo acompanha.
+new ResizeObserver(() => { if (pokeMode) window.kick.pokeIdleBounds(chatRect()); }).observe($('#chat-col'));
+new ResizeObserver(() => { if (pokeMode) window.kick.pokeIdleBounds(chatRect()); }).observe($('#tabs'));
+
 function select(slug) {
+  leavePoke();
   active = slug;
   unread.delete(slug);
   const box = $('#messages');
@@ -289,6 +322,7 @@ function applyState(s) {
     if (was === true && !ch.live) pushMessage(ch.slug, systemMessage(`${ch.displayName} está offline.`));
   }
   if (!active && state.channels.length) active = state.channels[0].slug;
+  if (!(state.pokeIdle || {}).open) pokeMode = false; // o jogo foi fechado (ou caiu)
   // Conta alt: o nome dela aparece na marca e no título, para não confundir as janelas.
   const appName = state.account ? `Streamterino · ${state.account}` : 'Streamterino';
   if ($('.brand-name').textContent !== appName) { $('.brand-name').textContent = appName; document.title = appName; }
@@ -423,9 +457,9 @@ function renderBonusBox() {
   const now = Date.now();
   const bar = el('div', 'poke-bar');
   const open = (state.pokeIdle || {}).open;
-  const btn = el('button', 'poke-open', open ? '🎮 PokeIdle aberto' : '🎮 Abrir PokeIdle');
-  btn.title = 'Abre o jogo numa janela do Streamterino. Enquanto ele estiver aberto, o app lê sozinho o tempo do Bônus Twitch e do Bônus Kick. Jogue por essa janela: o PokeIdle só aceita uma sessão por conta.';
-  btn.onclick = async () => applyState(await window.kick.openPokeIdle());
+  const btn = el('button', 'poke-open', open ? (pokeMode ? '🎮 PokeIdle na tela' : '🎮 Mostrar PokeIdle') : '🎮 Abrir PokeIdle');
+  btn.title = 'Abre o jogo no lugar do chat, numa aba própria. Enquanto ele estiver aberto, o app lê sozinho o tempo do Bônus Twitch e do Bônus Kick. O PokeIdle só aceita uma sessão por conta: se a mesma conta estiver aberta no D2K ou no navegador, uma delas cai.';
+  btn.onclick = () => showPoke();
   bar.append(btn);
   box.append(bar);
   const cols = el('div', 'bonus-cols');
@@ -458,11 +492,14 @@ function openModal(kind, ...nodes) {
   modalKind = kind;
   $('#modal-card').replaceChildren(...nodes);
   $('#modal').hidden = false;
+  // O jogo é desenhado por cima da página: some enquanto a janelinha estiver aberta.
+  if (pokeMode) window.kick.hidePokeIdle();
 }
 function closeModal() {
   if (modalKind === 'intro') window.kick.introDone().then(applyState);
   modalKind = null;
   $('#modal').hidden = true;
+  if (pokeMode) window.kick.showPokeIdle(chatRect());
 }
 $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#modal').hidden) closeModal(); });

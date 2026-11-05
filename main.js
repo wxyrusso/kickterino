@@ -3,7 +3,7 @@
 // uma janela oculta "api" em kick.com para consultar status/pontos, e uma janela
 // oculta e muda por canal AO VIVO tocando o player real — é isso que conta como "assistindo".
 const {
-  app, BrowserWindow, dialog, ipcMain, session, Tray, Menu, Notification, nativeImage, powerSaveBlocker, powerMonitor, net, webContents,
+  app, BrowserWindow, dialog, ipcMain, session, Tray, Menu, Notification, nativeImage, powerSaveBlocker, powerMonitor, net, webContents, WebContentsView,
 } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
@@ -693,7 +693,6 @@ function checkBonusEnding() {
 // próprio jogo recebe pelo WebSocket dele.
 const POKEIDLE_URL = 'https://pokeidle.io/app';
 const POKEIDLE_PARTITION = 'persist:pokeidle';
-let pokeWin = null;
 
 // Procura, em qualquer lugar da mensagem, um bloco { twitch: { bonus } } ou { kick: { bonus } }.
 function findPokeBonus(obj, depth = 0, out = {}) {
@@ -712,14 +711,15 @@ function findPokeBonus(obj, depth = 0, out = {}) {
   return out;
 }
 
-function openPokeIdle() {
-  if (pokeWin && !pokeWin.isDestroyed()) { if (pokeWin.isMinimized()) pokeWin.restore(); pokeWin.show(); pokeWin.focus(); return; }
-  pokeWin = new BrowserWindow({
-    width: 1366, height: 820, title: 'PokeIdle', autoHideMenuBar: true, backgroundColor: '#1b1b1b',
-    icon: path.join(__dirname, 'build', 'icon.png'),
-    webPreferences: { partition: POKEIDLE_PARTITION, backgroundThrottling: false },
-  });
-  const dbg = pokeWin.webContents.debugger;
+// O jogo fica DENTRO da janela do app, no lugar do chat (uma "aba" PokeIdle): a interface manda o
+// retângulo da área do chat e o jogo é desenhado por cima dele. Trocar para um canal só esconde o
+// jogo, que continua rodando; "Fechar" encerra a sessão do jogo.
+let pokeView = null;
+let pokeVisible = false;
+let pokeBounds = null;
+
+function attachPokeReader(wc) {
+  const dbg = wc.debugger;
   try { dbg.attach('1.3'); } catch {}
   dbg.on('message', (_e, method, p) => {
     if (method !== 'Network.webSocketFrameReceived') return;
@@ -739,9 +739,49 @@ function openPokeIdle() {
     }
   });
   dbg.sendCommand('Network.enable').catch(() => {});
-  pokeWin.loadURL(POKEIDLE_URL);
-  pokeWin.on('page-title-updated', (e) => e.preventDefault());
-  pokeWin.on('closed', () => { pokeWin = null; send('status', snapshot()); });
+}
+
+const pokeOpen = () => !!pokeView && !pokeView.webContents.isDestroyed();
+
+function ensurePokeView() {
+  if (pokeOpen()) return pokeView;
+  pokeView = new WebContentsView({ webPreferences: { partition: POKEIDLE_PARTITION, backgroundThrottling: false } });
+  pokeView.setBackgroundColor('#1b1b1b');
+  mainWin.contentView.addChildView(pokeView);
+  attachPokeReader(pokeView.webContents);
+  pokeView.webContents.on('render-process-gone', () => closePokeIdle());
+  pokeView.webContents.loadURL(POKEIDLE_URL);
+  pokeView.setVisible(false);
+  return pokeView;
+}
+
+function applyPokeBounds() {
+  if (!pokeOpen() || !pokeBounds) return;
+  const r = pokeBounds;
+  pokeView.setBounds({ x: Math.round(r.x), y: Math.round(r.y), width: Math.max(1, Math.round(r.width)), height: Math.max(1, Math.round(r.height)) });
+}
+
+function showPokeIdle(bounds) {
+  if (bounds) pokeBounds = bounds;
+  const view = ensurePokeView();
+  applyPokeBounds();
+  view.setVisible(true);
+  pokeVisible = true;
+  view.webContents.focus();
+}
+
+function hidePokeIdle() {
+  if (pokeOpen()) pokeView.setVisible(false);
+  pokeVisible = false;
+}
+
+function closePokeIdle() {
+  const view = pokeView;
+  pokeView = null;
+  pokeVisible = false;
+  if (!view) return;
+  try { mainWin.contentView.removeChildView(view); } catch {}
+  try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch {}
   send('status', snapshot());
 }
 
@@ -1300,7 +1340,7 @@ function snapshot() {
     intro: config.lastSeenVersion === app.getVersion() ? null : (firstRun ? 'welcome' : 'news'),
     bonuses: activeBonuses(now, 'kick'),
     twitchBonuses: activeBonuses(now, 'twitch'),
-    pokeIdle: { open: !!pokeWin && !pokeWin.isDestroyed(), readAt: config.pokeReadAt || null,
+    pokeIdle: { open: pokeOpen(), visible: pokeOpen() && pokeVisible, readAt: config.pokeReadAt || null,
       source: { twitch: pokeBase('twitch').source || null, kick: pokeBase('kick').source || null } },
     purchases: [...config.purchases].sort((a, b) => b.t - a.t).slice(0, 6),
     storeSequence: storeSequence ? { done: storeSequence.done, total: storeSequence.total } : null,
@@ -1534,7 +1574,10 @@ ipcMain.handle('bonus:set', (_e, platform, tipo, msLeft) => {
   updateTray();
   return snapshot();
 });
-ipcMain.handle('pokeidle:open', () => { openPokeIdle(); return snapshot(); });
+ipcMain.handle('pokeidle:show', (_e, bounds) => { showPokeIdle(bounds); return snapshot(); });
+ipcMain.handle('pokeidle:hide', () => { hidePokeIdle(); return snapshot(); });
+ipcMain.handle('pokeidle:close', () => { closePokeIdle(); return snapshot(); });
+ipcMain.on('pokeidle:bounds', (_e, bounds) => { pokeBounds = bounds; applyPokeBounds(); });
 ipcMain.handle('purchase:remove', (_e, t) => { config.purchases = config.purchases.filter((p) => p.t !== t); saveConfig(); updateTray(); return snapshot(); });
 ipcMain.handle('stores:sequence', (_e, slugs) => {
   const queue = (Array.isArray(slugs) ? slugs : []).filter((s) => config.channels.includes(s));
