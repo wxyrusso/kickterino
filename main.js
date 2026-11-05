@@ -334,8 +334,7 @@ function makeInvisible(win) {
   win.setOpacity(0);
   win.setIgnoreMouseEvents(true);
   win.setFocusable(false);
-  // Na Twitch a janela precisa ser larga para o chat aparecer: é nele que ficam o saldo e o baú.
-  if (win.isTwitchWatcher) win.setSize(1280, 720); else win.setSize(480, 270);
+  win.setSize(480, 270);
   win.setPosition(0, 0);
   if (isLinux) win.hide();
   else win.showInactive();
@@ -354,7 +353,6 @@ function startWatcher(slug) {
   const wcId = win.webContents.id;
   watcherIds.add(wcId);
   win.on('closed', () => watcherIds.delete(wcId));
-  win.isTwitchWatcher = platformOf(slug) === 'twitch';
   instrumentWatcher(slug, win);
   win.loadURL(channelUrl(slug));
   makeInvisible(win);
@@ -379,7 +377,38 @@ function startWatcher(slug) {
   status.set(slug, s);
 }
 
+// Twitch: o resumo de pontos (saldo e baú) não carrega na página da live escondida, mas carrega
+// no chat popout. Cada live da Twitch assistida ganha um chat popout invisível, só para isso.
+const twitchPointsWins = new Map(); // slug -> BrowserWindow
+function ensureTwitchPointsWin(slug) {
+  let win = twitchPointsWins.get(slug);
+  if (win && !win.isDestroyed()) return win;
+  win = new BrowserWindow({
+    width: 400, height: 640, x: 0, y: 0, show: false, title: `Twitch — pontos — ${nameOf(slug)}`,
+    type: 'toolbar', skipTaskbar: true, focusable: false, opacity: 0, autoHideMenuBar: true,
+    webPreferences: { partition: TWITCH_PARTITION, backgroundThrottling: false, spellcheck: false },
+  });
+  win.webContents.setAudioMuted(true);
+  win.setIgnoreMouseEvents(true);
+  // Igual às lives escondidas: sem imagens nem fontes (ninguém olha; o saldo é texto).
+  const wcId = win.webContents.id;
+  watcherIds.add(wcId);
+  win.on('closed', () => watcherIds.delete(wcId));
+  win.loadURL(`${TWITCH}/popout/${nameOf(slug)}/chat`);
+  if (isLinux) win.hide(); else win.showInactive();
+  win.on('closed', () => { if (twitchPointsWins.get(slug) === win) twitchPointsWins.delete(slug); });
+  win.webContents.on('render-process-gone', () => setImmediate(() => { if (!win.isDestroyed()) win.destroy(); }));
+  twitchPointsWins.set(slug, win);
+  return win;
+}
+function closeTwitchPointsWin(slug) {
+  const win = twitchPointsWins.get(slug);
+  twitchPointsWins.delete(slug);
+  if (win && !win.isDestroyed()) win.destroy();
+}
+
 function stopWatcher(slug) {
+  closeTwitchPointsWin(slug);
   const win = watchers.get(slug);
   if (!win) return;
   watchers.delete(slug);
@@ -766,6 +795,11 @@ async function refreshChannel(slug) {
 // lê o saldo e, se o baú de bônus (+50) estiver disponível, clica nele, como a pessoa faria.
 const TWITCH_PAGE_SCRIPT = `(() => {
   const q = (sel) => document.querySelector(sel);
+  // Chat recolhido: abre (é nele que ficam o saldo e o baú).
+  let expanded = false;
+  const toggle = q('[data-a-target="right-column__toggle-collapse-btn"]');
+  if (toggle && !q('[data-a-target="chat-input"], .chat-input, [data-a-target="chat-scroller"]')
+    && /expand|expandir|mostrar/i.test(toggle.getAttribute('aria-label') || '')) { toggle.click(); expanded = true; }
   let btn = null;
   const icon = q('.claimable-bonus__icon');
   if (icon) btn = icon.closest('button');
@@ -773,11 +807,23 @@ const TWITCH_PAGE_SCRIPT = `(() => {
     .find((b) => /claim bonus|resgatar b[oô]nus|coletar b[oô]nus|obter b[oô]nus/i.test(b.getAttribute('aria-label') || ''));
   let claimed = false;
   if (btn && !btn.disabled) { btn.click(); claimed = true; }
-  const bal = q('[data-test-selector="balance-string"]');
+  // "copo" = community points (nome atual na Twitch); "balance-string" era o antigo.
+  const bal = q('[data-test-selector="copo-balance-string"]') || q('[data-test-selector="balance-string"]');
   return {
     claimed,
     balance: bal ? bal.textContent.trim() : null,
     summary: !!q('[data-test-selector="community-points-summary"], .community-points-summary'),
+    expanded,
+    // Diagnóstico curto (vai para o histórico): ajuda a ver por que o saldo não apareceu.
+    diag: {
+      w: innerWidth, h: innerHeight,
+      chat: !!q('[data-a-target="chat-input"], .chat-input, [data-a-target="chat-scroller"]'),
+      toggle: (q('[data-a-target="right-column__toggle-collapse-btn"]') || {}).ariaLabel || null,
+      logged: !!q('[data-a-target="user-menu-toggle"]'),
+      cp: [...document.querySelectorAll('[class*="community-points"], [data-test-selector*="points"]')].slice(0, 4).map((e) => (e.getAttribute('data-test-selector') || e.className || '').toString().slice(0, 50)),
+      btns: [...document.querySelectorAll('.chat-input button, [class*="chat-input"] button, .right-column button')].map((b) => (b.getAttribute('aria-label') || b.getAttribute('data-a-target') || b.textContent || '').trim().slice(0, 40)).filter(Boolean).slice(0, 25),
+      sels: [...new Set([...document.querySelectorAll('.chat-input [data-test-selector], [class*="chat-input"] [data-test-selector]')].map((e) => e.getAttribute('data-test-selector')))].slice(0, 20),
+    },
   };
 })()`;
 
@@ -798,6 +844,7 @@ async function checkTwitchPage(slug, win, s) {
   const info = await withTimeout(win.webContents.executeJavaScript(TWITCH_PAGE_SCRIPT), 10 * 1000).catch(() => null);
   if (!info) return;
   s.chatVisible = info.summary;
+  s.twitchDiag = { ...info.diag, expanded: info.expanded, balance: info.balance };
   if (info.claimed) {
     s.bonusClaims = (s.bonusClaims || 0) + 1;
     s.lastClaimAt = Date.now();
@@ -818,7 +865,7 @@ async function checkTwitchPage(slug, win, s) {
 async function checkPlayers() {
   for (const [slug, win] of watchers) {
     const s = status.get(slug);
-    if (s && !win.isDestroyed() && platformOf(slug) === 'twitch') await checkTwitchPage(slug, win, s);
+    if (s && !win.isDestroyed() && platformOf(slug) === 'twitch') await checkTwitchPage(slug, ensureTwitchPointsWin(slug), s);
     if (!s || win.isDestroyed() || userOpened.has(win)) continue;
     const gateSelector = platformOf(slug) === 'twitch'
       ? '[data-a-target="player-overlay-mature-accept"], [data-a-target="content-classification-gate-overlay-start-watching-button"]'
@@ -868,6 +915,7 @@ function logHistory() {
       live: !!s.live, watching: watchers.has(slug), points: s.points ?? null, following: s.following ?? null,
       subscribed: !!s.subscribed, earning: earningState(slug, now), video: s.video || null, visibility: s.visibility || null,
       gate: !!s.ageGate, watchedMin: Math.floor(totalWatched(slug, now) / 60000),
+      ...(s.twitchDiag ? { twitch: s.twitchDiag, claims: s.bonusClaims || 0 } : {}),
     };
   }
   const line = JSON.stringify({
