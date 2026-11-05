@@ -233,6 +233,81 @@ function createApiWindow() {
 
 // Loja de pontos: o chat popout oficial da Kick, que tem o saldo e as recompensas do canal.
 const storeWindows = new Map();
+// ---------- Twitch: resgates de bônus lidos da janela de pontos ----------
+// Na Twitch os bônus do PokeIdle saem em pacotes de horas (1h, 3h, 5h, 10h), então a queda do saldo
+// não diz o que foi comprado (3.000 pode ser 10h de XP, 6h de Capture ou 3h de Lure). A janela de
+// pontos do app mostra no chat "sua_conta resgatou Bônus +15% XP PokeIdle (5h)": o app lê essas
+// linhas (só as novas, só as da sua conta) e soma exatamente o bônus e as horas.
+const REDEEM_WATCH_SCRIPT = `(() => {
+  if (window.__stRedeem) return true;
+  window.__stRedeem = [];
+  const seen = new WeakSet();
+  const look = (n) => {
+    if (!n || n.nodeType !== 1 || seen.has(n)) return;
+    seen.add(n);
+    const t = (n.innerText || '').replace(/\\s+/g, ' ').trim();
+    if (t.length < 400 && /resgatou|redeemed/i.test(t)) window.__stRedeem.push(t);
+  };
+  new MutationObserver((muts) => { for (const m of muts) m.addedNodes.forEach(look); })
+    .observe(document.body, { childList: true, subtree: true });
+  return true;
+})()`;
+
+const BONUS_BY_WORD = [[/secret\s*lure|lure/i, 1000], [/capture\s*boost|capture|captura/i, 500], [/\bxp\b/i, 300]];
+
+// "wxyrusso_ resgatou Bônus de +15% Capture Boost (10h) 5.000" -> { cost: 500, hours: 10 }
+function parseRedemption(text, login) {
+  const t = String(text || '');
+  if (!login || !new RegExp(`(^|\\s)${login.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+(resgatou|redeemed)\\b`, 'i').test(t)) return null;
+  if (!/pokeidle|\+\s*15\s*%/i.test(t)) return null; // só bônus do PokeIdle
+  const hit = BONUS_BY_WORD.find(([re]) => re.test(t));
+  if (!hit) return null;
+  const h = /\((\d{1,3})\s*h\)/i.exec(t);
+  const hours = h ? Math.min(240, Number(h[1])) : 1;
+  return { cost: hit[1], hours };
+}
+
+let twitchLoginName = null;
+async function twitchLogin() {
+  if (twitchLoginName) return twitchLoginName;
+  const c = await session.fromPartition(TWITCH_PARTITION).cookies.get({ url: TWITCH, name: 'login' }).catch(() => []);
+  twitchLoginName = (c[0] && decodeURIComponent(c[0].value)) || twitchUser || null;
+  return twitchLoginName;
+}
+
+function watchStoreRedemptions(slug, win) {
+  const recent = new Map(); // texto -> instante (a mesma linha pode aparecer duas vezes)
+  const install = () => win.webContents.executeJavaScript(REDEEM_WATCH_SCRIPT).catch(() => {});
+  win.webContents.on('did-finish-load', install);
+  const timer = setInterval(async () => {
+    if (win.isDestroyed()) return clearInterval(timer);
+    const lines = await win.webContents.executeJavaScript('(window.__stRedeem || []).splice(0)').catch(() => []);
+    if (!lines.length) return;
+    const login = await twitchLogin();
+    const now = Date.now();
+    let added = 0;
+    for (const line of lines) {
+      if (now - (recent.get(line) || 0) < 10 * 1000) continue;
+      recent.set(line, now);
+      const r = parseRedemption(line, login);
+      if (!r) continue;
+      for (let i = 0; i < r.hours; i++) config.purchases.push({ t: now + added + i, cost: r.cost, slug, platform: 'twitch', source: 'loja' });
+      added += r.hours;
+      const s = status.get(slug);
+      if (s) s.expectedDrop = (s.expectedDrop || 0) + r.cost * r.hours; // a queda do saldo já está explicada
+      const name = (BONUSES.find((b) => b.cost === r.cost) || {}).name || 'bônus';
+      send('toast', `⏱ +${r.hours}h de ${name} (Twitch) no cronômetro`);
+    }
+    if (added) {
+      config.purchases = config.purchases.filter((p) => now - p.t < KEEP_PURCHASES_MS);
+      saveConfig(); configDirty = false;
+      send('status', snapshot());
+      updateTray();
+    }
+  }, 3000);
+  win.on('closed', () => clearInterval(timer));
+}
+
 function openStore(slug, title = `Pontos — ${slug}`) {
   let win = storeWindows.get(slug);
   if (win && !win.isDestroyed()) { win.show(); win.focus(); return; }
@@ -243,6 +318,7 @@ function openStore(slug, title = `Pontos — ${slug}`) {
   });
   win.loadURL(platformOf(slug) === 'twitch' ? `${TWITCH}/popout/${nameOf(slug)}/chat` : `${KICK}/popout/${slug}/chat`);
   win.on('page-title-updated', (e) => e.preventDefault()); // mantém o "(2 de 4)" do modo antes de dormir
+  if (platformOf(slug) === 'twitch') watchStoreRedemptions(slug, win);
   win.on('closed', () => {
     storeWindows.delete(slug);
     refreshChannel(slug).then(() => send('status', snapshot()));
@@ -921,9 +997,18 @@ async function checkTwitchPage(slug, win, s) {
   }
   // Saldo caiu (bônus comprado na loja da Twitch): entra no cronômetro, como na Kick. Com número
   // arredondado (acima de 1.000) só vale queda grande, e a combinação de bônus tem de bater.
-  if (s.points != null && p.value < s.points && s.points - p.value >= (p.approx || s.pointsApprox ? 280 : 250)) {
-    registerPurchases(slug, s.points - p.value);
-    updateTray();
+  if (s.points != null && p.value < s.points) {
+    // O que a janela de pontos já registrou (resgate lido do chat) não conta de novo.
+    const drop = s.points - p.value - (s.expectedDrop || 0);
+    s.expectedDrop = 0;
+    // Sem o resgate lido, só dá para ter certeza de 1 h de um bônus (300, 500 ou 1.000): pacotes de
+    // horas têm várias combinações possíveis, e aí o app avisa em vez de chutar.
+    const single = BONUSES.find((b) => drop >= b.cost && drop <= b.cost + 25);
+    if (single && !p.approx && !s.pointsApprox) { registerPurchases(slug, drop); updateTray(); }
+    else if (drop >= 280) {
+      notify(`${s.displayName || nameOf(slug)}: -${drop.toLocaleString('pt-BR')} pontos na Twitch`,
+        'Não deu para saber quais bônus foram comprados. Clique no tempo do bônus no painel e digite quanto falta.', showMain);
+    }
   }
   s.points = p.value;
   s.pointsApprox = p.approx;
