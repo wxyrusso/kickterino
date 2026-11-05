@@ -1831,7 +1831,7 @@ app.whenReady().then(() => {
   mainWin.setMenuBarVisibility(false);
   // Sem isto o Windows mostra na barra de tarefas (e ao fixar) o ícone do electron.exe, um átomo.
   if (process.platform === 'win32') {
-    const ico = path.join(__dirname, 'build', 'streamterino-v2.ico');
+    const ico = path.join(__dirname, 'build', 'terino-atomo.ico');
     const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
     mainWin.setAppDetails({
       appId: ACCOUNT ? `com.streamterino.app.${ACCOUNT}` : 'com.streamterino.app',

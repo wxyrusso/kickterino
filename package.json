@@ -40,7 +40,7 @@
       "preload.js",
       "renderer/**/*",
       "build/icon.png",
-      "build/streamterino-v2.ico"
+      "build/terino-atomo.ico"
     ],
     "electronFuses": {
       "enableCookieEncryption": true,
