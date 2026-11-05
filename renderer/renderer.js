@@ -728,6 +728,45 @@ function celebrate(prev, next) {
 $('#btn-login').onclick = () => window.kick.showLogin('kick');
 $('#btn-login-twitch').onclick = () => window.kick.showLogin('twitch');
 $('#btn-twitch').onclick = () => { openModal('twitch'); renderTwitchModal(); };
+$('#btn-accounts').onclick = () => { openModal('accounts'); renderAccountsModal(); };
+
+// ---------- Contas (principal + alts) ----------
+// Cada conta abre numa janela própria, com logins, canais e bônus só dela.
+async function renderAccountsModal(message = '') {
+  const accounts = await window.kick.listAccounts();
+  const wrap = el('div', 'accounts-modal');
+  wrap.append(el('h3', null, '👥 Contas'));
+  wrap.append(el('p', null, 'Cada conta abre numa janela própria do TK MultiStream, com os próprios logins da Kick, da Twitch e do PokeIdle. Uma conta nova começa com a sua lista de canais; os logins você faz nela.'));
+  const list = el('div', 'accounts-list');
+  for (const a of accounts) {
+    const row = el('div', 'account-row' + (a.current ? ' current' : ''));
+    row.append(el('span', 'account-name', a.label));
+    if (a.current) row.append(el('span', 'account-here', 'esta janela'));
+    else row.append(button('Abrir', null, async () => { await window.kick.openAccount(a.name); toast(`Abrindo a conta ${a.label}…`); }));
+    list.append(row);
+  }
+  wrap.append(list);
+  const form = el('div', 'account-new');
+  const input = el('input'); input.placeholder = 'nome da conta nova (ex.: alt1)'; input.maxLength = 20;
+  const lbl = el('label', 'toggle');
+  const chk = el('input'); chk.type = 'checkbox'; chk.checked = true;
+  lbl.append(chk, ' Criar atalho na área de trabalho');
+  const msg = el('div', 'account-msg', message);
+  const create = async () => {
+    if (!input.value.trim()) { input.focus(); return; }
+    msg.textContent = 'Criando…';
+    const r = await window.kick.createAccount({ name: input.value, shortcut: chk.checked });
+    if (!r.ok) { msg.textContent = r.message; return; }
+    renderAccountsModal(`Conta "${r.name}" criada e abrindo${r.shortcut ? ' (atalho na área de trabalho)' : ''}. Faça os logins nela.`);
+  };
+  input.onkeydown = (e) => { if (e.key === 'Enter') create(); };
+  form.append(input, button('Criar e abrir', 'primary', create), lbl, msg);
+  wrap.append(el('h4', null, 'Nova conta'), form);
+  const actions = el('div', 'modal-actions');
+  actions.append(button('Fechar', null, closeModal));
+  wrap.append(actions);
+  if (modalKind === 'accounts') $('#modal-card').replaceChildren(wrap);
+}
 $('#btn-logout').onclick = async () => applyState(await window.kick.logout());
 $('#btn-refresh').onclick = async () => applyState(await window.kick.refresh());
 $('#farming').onchange = async (e) => applyState(await window.kick.setFarming(e.target.checked));

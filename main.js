@@ -1591,6 +1591,77 @@ function setupAutoUpdate() {
   setInterval(check, UPDATE_CHECK_MS);
 }
 
+// ---------- Contas (principal + alts) ----------
+// Cada conta é uma cópia do app com pasta própria (Kickterino-NOME). O botão "Contas" lista as que
+// existem, abre qualquer uma e cria novas, com atalho na área de trabalho se a pessoa quiser.
+const ACCOUNT_RE = /^[a-z0-9_-]{1,20}$/;
+const cleanAccount = (n) => String(n || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '').slice(0, 20);
+
+function listAccounts() {
+  let dirs = [];
+  try { dirs = fs.readdirSync(app.getPath('appData')); } catch {}
+  const alts = dirs.filter((d) => d.startsWith('Kickterino-')).map((d) => d.slice('Kickterino-'.length))
+    .filter((n) => ACCOUNT_RE.test(n)).sort();
+  return [{ name: null, label: 'Principal', current: !ACCOUNT }, ...alts.map((n) => ({ name: n, label: n, current: ACCOUNT === n }))];
+}
+
+function accountArgs(name) {
+  const extra = name ? [`--conta=${name}`] : [];
+  return app.isPackaged ? extra : [app.getAppPath(), ...extra];
+}
+
+function launchAccount(name) {
+  const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  const { spawn } = require('child_process');
+  // A conta nova usa a pasta dela: sem herdar a pasta de testes (KICKTERINO_DATA) desta janela.
+  const env = { ...process.env };
+  delete env.KICKTERINO_DATA;
+  spawn(exe, accountArgs(name), { detached: true, stdio: 'ignore', env }).unref();
+}
+
+// Atalho na área de trabalho e no menu Iniciar (só no Windows), com o ícone do app.
+function createAccountShortcut(name) {
+  if (process.platform !== 'win32') return Promise.resolve(false);
+  const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  const args = accountArgs(name).map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ');
+  const ico = path.join(__dirname, 'build', 'terino-atomo.ico');
+  const title = `TK MultiStream ${name}`;
+  const ps = (s) => `'${String(s).replace(/'/g, "''")}'`;
+  const script = [
+    '$sh = New-Object -ComObject WScript.Shell',
+    `foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {`,
+    `  $s = $sh.CreateShortcut((Join-Path $dir ${ps(title + '.lnk')}))`,
+    `  $s.TargetPath = ${ps(exe)}`,
+    `  $s.Arguments = ${ps(args)}`,
+    `  $s.WorkingDirectory = ${ps(path.dirname(app.isPackaged ? exe : app.getAppPath()))}`,
+    `  $s.IconLocation = ${ps(ico + ',0')}`,
+    `  $s.Description = ${ps(`TK MultiStream — conta ${name}`)}`,
+    '  $s.Save()',
+    '}',
+  ].join('\n');
+  const { execFile } = require('child_process');
+  return new Promise((resolve) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true }, (err) => resolve(!err));
+  });
+}
+
+ipcMain.handle('accounts:list', () => listAccounts());
+ipcMain.handle('accounts:open', (_e, name) => {
+  const n = name ? cleanAccount(name) : null;
+  if (n === (ACCOUNT || null)) { showMain(); return { ok: true }; }
+  if (n && !ACCOUNT_RE.test(n)) return { ok: false, message: 'Nome inválido.' };
+  launchAccount(n);
+  return { ok: true };
+});
+ipcMain.handle('accounts:create', async (_e, { name, shortcut } = {}) => {
+  const n = cleanAccount(name);
+  if (!ACCOUNT_RE.test(n)) return { ok: false, message: 'Use só letras, números, - ou _ (até 20).' };
+  if (listAccounts().some((a) => a.name === n)) return { ok: false, message: `A conta "${n}" já existe: use Abrir.` };
+  launchAccount(n); // abre já; o atalho leva alguns segundos para ficar pronto
+  const made = shortcut ? await createAccountShortcut(n) : false;
+  return { ok: true, name: n, shortcut: made, accounts: listAccounts() };
+});
+
 ipcMain.handle('state:get', () => snapshot());
 // Aceita "canal" ou kick.com/canal (Kick) e "twitch:canal" ou twitch.tv/canal (Twitch).
 function parseChannelInput(input) {

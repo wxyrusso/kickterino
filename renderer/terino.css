@@ -70,3 +70,16 @@ button:hover { border-color: var(--accent); }
 .bonus-col-head { display: flex; align-items: center; }
 .bonus-col-head .bonus-src { margin-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #points-cols table.pts caption .plat { vertical-align: middle; position: relative; top: -1px; }
+
+/* Janela de contas */
+.accounts-modal { display: flex; flex-direction: column; gap: 8px; min-width: 380px; max-width: 460px; }
+.accounts-modal p { font-size: 12px; line-height: 1.5; opacity: .85; margin: 0; }
+.accounts-modal h4 { margin: 8px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.accounts-list { display: flex; flex-direction: column; gap: 6px; }
+.account-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-3); }
+.account-row.current { border-color: var(--accent); }
+.account-name { font-weight: 700; }
+.account-here { font-size: 11px; color: var(--accent); }
+.account-new { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.account-new input:not([type]) { flex: 1 1 200px; padding: 6px 8px; }
+.account-msg { flex-basis: 100%; min-height: 16px; font-size: 12px; color: var(--accent); }
