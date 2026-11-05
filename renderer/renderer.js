@@ -461,7 +461,20 @@ function renderBonusBox() {
   btn.title = 'Abre o jogo no lugar do chat, numa aba própria. Enquanto ele estiver aberto, o app lê sozinho o tempo do Bônus Twitch e do Bônus Kick. O PokeIdle só aceita uma sessão por conta: se a mesma conta estiver aberta no D2K ou no navegador, uma delas cai.';
   btn.onclick = () => showPoke();
   bar.append(btn);
+  // Extensões do Chrome carregadas no PokeIdle; as que têm painel próprio ganham um botão.
+  const exts = state.pokeExtensions || [];
+  for (const ext of exts.filter((e) => e.cockpit)) {
+    const c = el('button', 'poke-ext', `🛰 ${ext.name.replace(/ - .*/, '')}`);
+    c.title = `Abre o painel (Cockpit) da extensão ${ext.name}. Ele conversa com o PokeIdle aberto aqui no app.`;
+    c.onclick = () => window.kick.openCockpit(ext.id);
+    bar.append(c);
+  }
   box.append(bar);
+  if (exts.length) {
+    const note = el('div', 'poke-ext-note', `Extensões no PokeIdle: ${exts.map((e) => `${e.name} ${e.version || ''}`.trim()).join(' · ')}`);
+    note.title = 'Carregadas da pasta do seu Chrome. Quando o Chrome atualizar uma delas, o app pega a versão nova ao reiniciar.';
+    box.append(note);
+  }
   const cols = el('div', 'bonus-cols');
   cols.append(bonusColumn('twitch', state.twitchBonuses, now), bonusColumn('kick', state.bonuses, now));
   box.append(cols);

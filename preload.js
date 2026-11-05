@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('kick', {
   showPokeIdle: (bounds) => ipcRenderer.invoke('pokeidle:show', bounds),
   hidePokeIdle: () => ipcRenderer.invoke('pokeidle:hide'),
   closePokeIdle: () => ipcRenderer.invoke('pokeidle:close'),
+  openCockpit: (id) => ipcRenderer.invoke('cockpit:open', id),
   pokeIdleBounds: (bounds) => ipcRenderer.send('pokeidle:bounds', bounds),
   removePurchase: (t) => ipcRenderer.invoke('purchase:remove', t),
   openStoreSequence: (slugs) => ipcRenderer.invoke('stores:sequence', slugs),

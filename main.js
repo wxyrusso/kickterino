@@ -785,6 +785,63 @@ function closePokeIdle() {
   send('status', snapshot());
 }
 
+// ---------- Extensões do Chrome no PokeIdle ----------
+// Extensões que a pessoa já usa no Chrome para o PokeIdle rodam também no jogo aberto no app.
+// O app lê a versão mais nova direto da pasta do Chrome (quando o Chrome atualiza, o app pega na
+// próxima vez que abrir) e carrega só na sessão do PokeIdle.
+const POKE_EXTENSIONS = [
+  { id: 'mhnplloljgchpfpcpbhmcokmnefodjnh', name: '/hunt for PokeIdle' },
+  { id: 'olccbpdjdkbfgondiiaicmlifhbcggmk', name: 'Rotom Sniper', cockpit: 'cockpit.html' },
+];
+const loadedPokeExtensions = []; // { id, name, cockpit, extId }
+
+function chromeExtensionDir(id) {
+  const base = path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'User Data');
+  let profiles = [];
+  try { profiles = fs.readdirSync(base).filter((d) => d === 'Default' || /^Profile \d+$/.test(d)); } catch { return null; }
+  for (const prof of profiles) {
+    const dir = path.join(base, prof, 'Extensions', id);
+    let versions = [];
+    try { versions = fs.readdirSync(dir).filter((v) => fs.existsSync(path.join(dir, v, 'manifest.json'))); } catch { continue; }
+    // "1.5.2_0" > "1.10.0_0" errado em ordem de texto: compara número por número.
+    const num = (v) => v.split(/[._]/).map(Number);
+    versions.sort((a, b) => { const x = num(a), y = num(b); for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (y[i] || 0) - (x[i] || 0); return 0; });
+    if (versions[0]) return path.join(dir, versions[0]);
+  }
+  return null;
+}
+
+async function loadPokeExtensions() {
+  const ses = session.fromPartition(POKEIDLE_PARTITION);
+  const api = ses.extensions || ses; // Electron novo: ses.extensions; antigo: na própria sessão
+  for (const ext of POKE_EXTENSIONS) {
+    const dir = chromeExtensionDir(ext.id);
+    if (!dir) continue;
+    try {
+      const loaded = await api.loadExtension(dir, { allowFileAccess: false });
+      loadedPokeExtensions.push({ ...ext, extId: loaded.id, version: loaded.version });
+    } catch (e) {
+      if (process.env.KICKTERINO_DEBUG) console.log(`EXT falhou ${ext.name}: ${e.message}`);
+    }
+  }
+  send('status', snapshot());
+}
+
+// O Cockpit do Rotom Sniper: no Chrome abre pelo ícone da extensão; aqui, pelo botão do painel.
+let cockpitWin = null;
+function openCockpit(id) {
+  const ext = loadedPokeExtensions.find((e) => e.id === id && e.cockpit);
+  if (!ext) return;
+  if (cockpitWin && !cockpitWin.isDestroyed()) { cockpitWin.show(); cockpitWin.focus(); return; }
+  cockpitWin = new BrowserWindow({
+    width: 1160, height: 760, title: `${ext.name} — Cockpit`, autoHideMenuBar: true, backgroundColor: '#111',
+    icon: path.join(__dirname, 'build', 'icon.png'),
+    webPreferences: { partition: POKEIDLE_PARTITION },
+  });
+  cockpitWin.loadURL(`chrome-extension://${ext.extId}/${ext.cockpit}`);
+  cockpitWin.on('closed', () => { cockpitWin = null; });
+}
+
 // Relatório dos últimos 7 dias: pontos por dia, compras e tempo com bônus ativo por período.
 const PERIODS = [['Madrugada', 0, 6], ['Dia', 6, 18], ['Noite', 18, 24]];
 function weeklyReport(now = Date.now()) {
@@ -1340,6 +1397,7 @@ function snapshot() {
     intro: config.lastSeenVersion === app.getVersion() ? null : (firstRun ? 'welcome' : 'news'),
     bonuses: activeBonuses(now, 'kick'),
     twitchBonuses: activeBonuses(now, 'twitch'),
+    pokeExtensions: loadedPokeExtensions.map((e) => ({ id: e.id, name: e.name, version: e.version, cockpit: !!e.cockpit })),
     pokeIdle: { open: pokeOpen(), visible: pokeOpen() && pokeVisible, readAt: config.pokeReadAt || null,
       source: { twitch: pokeBase('twitch').source || null, kick: pokeBase('kick').source || null } },
     purchases: [...config.purchases].sort((a, b) => b.t - a.t).slice(0, 6),
@@ -1576,6 +1634,7 @@ ipcMain.handle('bonus:set', (_e, platform, tipo, msLeft) => {
 });
 ipcMain.handle('pokeidle:show', (_e, bounds) => { showPokeIdle(bounds); return snapshot(); });
 ipcMain.handle('pokeidle:hide', () => { hidePokeIdle(); return snapshot(); });
+ipcMain.handle('cockpit:open', (_e, id) => { openCockpit(id); });
 ipcMain.handle('pokeidle:close', () => { closePokeIdle(); return snapshot(); });
 ipcMain.on('pokeidle:bounds', (_e, bounds) => { pokeBounds = bounds; applyPokeBounds(); });
 ipcMain.handle('purchase:remove', (_e, t) => { config.purchases = config.purchases.filter((p) => p.t !== t); saveConfig(); updateTray(); return snapshot(); });
@@ -1762,6 +1821,7 @@ app.setAppUserModelId(ACCOUNT ? `com.streamterino.app.${ACCOUNT}` : 'com.streamt
 app.whenReady().then(() => {
   loadConfig();
   setupSession();
+  loadPokeExtensions();
   mainWin = new BrowserWindow({
     width: 1100, height: 760, backgroundColor: '#1a1a1a', title: APP_TITLE,
     show: !process.argv.includes('--hidden'), // ao iniciar com o Windows, abre direto na bandeja

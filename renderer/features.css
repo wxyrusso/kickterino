@@ -152,3 +152,5 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
   .bonus-cols, #points-cols { grid-template-columns: 1fr; background: none; gap: 10px; }
   #points-cols table.pts.kick { margin-top: 6px; }
 }
+.poke-ext { flex: 0 0 auto; }
+.poke-ext-note { font-size: 11px; color: var(--muted, #9aa); margin: -2px 2px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
