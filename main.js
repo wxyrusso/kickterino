@@ -644,7 +644,11 @@ const twitchChat = new twitch.TwitchChat({
 let twitchUser = null;       // login da conta conectada ao chat (token OAuth)
 let twitchLoggedIn = false;  // sessão do site (as lives ocultas contam pontos para essa conta)
 let twitchStatusError = null;
-const twitchKeys = () => config.channels.filter((k) => platformOf(k) === 'twitch');
+// Toda chamada à API da Twitch tem prazo: sem isso, uma resposta que nunca chega prendia a rodada
+// de atualização inteira (o app parava de atualizar lives e pontos).
+const TWITCH_TIMEOUT_MS = 15 * 1000;
+const twitchFetch = (url, opts = {}) => withTimeout(net.fetch(url, { ...opts, signal: AbortSignal.timeout(TWITCH_TIMEOUT_MS) }), TWITCH_TIMEOUT_MS + 2000);
+const twitchKeys =() => config.channels.filter((k) => platformOf(k) === 'twitch');
 const hasTwitchApi = () => !!(config.twitchClientId && config.twitchClientSecret);
 
 function syncTwitchChat() {
@@ -654,7 +658,7 @@ function syncTwitchChat() {
 async function syncTwitchAuth() {
   if (!config.twitchToken) { twitchUser = null; twitchChat.setAuth(null); return; }
   try {
-    const info = await twitch.validateUserToken(net.fetch, config.twitchToken);
+    const info = await twitch.validateUserToken(twitchFetch, config.twitchToken);
     if (!info) { config.twitchToken = ''; saveConfig(); twitchUser = null; twitchChat.setAuth(null); return; }
     twitchUser = info.login;
     twitchChat.setAuth({ login: info.login, token: config.twitchToken });
@@ -682,7 +686,7 @@ async function refreshTwitch() {
     return;
   }
   try {
-    const live = await twitch.fetchLive(net.fetch, { clientId: config.twitchClientId, clientSecret: config.twitchClientSecret }, keys.map(nameOf));
+    const live = await twitch.fetchLive(twitchFetch, { clientId: config.twitchClientId, clientSecret: config.twitchClientSecret }, keys.map(nameOf));
     twitchStatusError = null;
     for (const key of keys) {
       const s = status.get(key);
