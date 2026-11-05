@@ -123,3 +123,9 @@ input.bonus-edit { width: 84px; padding: 2px 6px; font-size: 12px; }
 .bonus-col .bonus-chip:nth-child(3) .bonus-name::before { content: "🎯 "; }
 .bonus-col .bonus-chip:nth-child(4) .bonus-name::before { content: "✨ "; }
 .brand-img { width: 26px; height: 26px; border-radius: 7px; vertical-align: middle; margin-right: 8px; box-shadow: 0 0 14px rgba(145, 70, 255, .45), 0 0 14px rgba(83, 252, 24, .3); }
+.bonus-reset { padding: 1px 6px; font-size: 12px; margin-left: 4px; opacity: .7; }
+.bonus-reset:hover { opacity: 1; }
+.bonus-reset.armed { opacity: 1; border-color: #ff5a5a; color: #ff8a8a; font-size: 11px; }
+/* Nas colunas: nome | tempo | +1h | ↺ numa linha só */
+.bonus-col .bonus-chip { grid-template-columns: 1fr auto auto auto; gap: 6px; }
+.bonus-col .bonus-chip .bonus-reset { padding: 0 6px; margin: 0; }

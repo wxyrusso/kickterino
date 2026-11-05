@@ -392,6 +392,20 @@ function bonusColumn(platform, list, now) {
     add.title = `Registrar 1 h de ${b.name} resgatada na ${platform === 'twitch' ? 'Twitch' : 'Kick'}`;
     add.onclick = async () => applyState(await window.kick.addPurchase(b.cost, platform));
     chip.append(add);
+    if (on) {
+      // Zerar: clique uma vez para armar e outra para confirmar (evita zerar sem querer).
+      const reset = el('button', 'bonus-reset', '↺');
+      reset.title = 'Zerar este cronômetro (para desfazer só um +1h, use o ✕ na lista de compras abaixo)';
+      reset.onclick = async () => {
+        if (!reset.classList.contains('armed')) {
+          reset.classList.add('armed'); reset.textContent = 'zerar?';
+          setTimeout(() => { if (reset.isConnected) { reset.classList.remove('armed'); reset.textContent = '↺'; } }, 4000);
+          return;
+        }
+        applyState(await window.kick.setBonus(platform, b.tipo, 0));
+      };
+      chip.append(reset);
+    }
     col.append(chip);
   }
   return col;
