@@ -1323,7 +1323,8 @@ ipcMain.handle('chat:send', async (_e, { chatroomId, content }) => {
 // Só uma instância: abrir o atalho de novo traz a janela existente para frente.
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', showMain);
-app.setAppUserModelId('com.vinniisaantos.kickterino');
+// Identificador próprio: a barra de tarefas usa o ícone do Streamterino, não o do Kickterino instalado.
+app.setAppUserModelId('com.streamterino.app');
 
 app.whenReady().then(() => {
   loadConfig();

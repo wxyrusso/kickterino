@@ -21,7 +21,7 @@
     "electron-builder": "26.18.0"
   },
   "build": {
-    "appId": "com.vinniisaantos.kickterino",
+    "appId": "com.streamterino.app",
     "productName": "Streamterino",
     "directories": {
       "output": "dist",
