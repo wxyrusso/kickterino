@@ -325,7 +325,10 @@ function applyState(s) {
   if (!(state.pokeIdle || {}).open) pokeMode = false; // o jogo foi fechado (ou caiu)
   // Conta alt: o nome dela aparece na marca e no título, para não confundir as janelas.
   const appName = state.account ? `Terino · ${state.account}` : 'Terino';
-  if ($('.brand-name').textContent !== appName) { $('.brand-name').textContent = appName; document.title = appName; }
+  // No topo fica só o ícone; nas alts, um selinho com o nome da conta.
+  const tag = state.account || '';
+  if ($('.brand-name').textContent !== tag) { $('.brand-name').textContent = tag; $('.brand-name').hidden = !tag; }
+  if (document.title !== appName) document.title = appName;
   $('#farming').checked = state.farming;
   $('#low-quality').checked = state.lowQuality;
   $('#rotation').checked = state.rotation;
