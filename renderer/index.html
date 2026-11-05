@@ -61,10 +61,10 @@
       <div id="bonus-box"></div>
       <div id="sleep-box" hidden><button id="btn-sleep" title="Mostra os canais com pontos para comprar bônus e abre as lojas uma de cada vez">🌙 Antes de dormir</button></div>
       <h2>Pontos do canal</h2>
-      <table>
-        <thead><tr><th>Canal</th><th>Status</th><th>Pontos</th><th>Assistido</th></tr></thead>
-        <tbody id="panel-rows"></tbody>
-      </table>
+      <div id="points-cols">
+        <table id="pts-twitch" class="pts twitch"><caption></caption><thead><tr><th>Canal</th><th>Status</th><th>Pontos</th></tr></thead><tbody></tbody></table>
+        <table id="pts-kick" class="pts kick"><caption></caption><thead><tr><th>Canal</th><th>Status</th><th>Pontos</th></tr></thead><tbody></tbody></table>
+      </div>
       <div id="limit-box">
         <button id="btn-limit" title="Abre todas as lives ao vivo e mede quantas a Kick conta; se não forem todas, testa números menores (~20 min por etapa) e ajusta o app para o que rende mais pontos">Descobrir limite de lives</button>
         <div id="limit-info"></div>

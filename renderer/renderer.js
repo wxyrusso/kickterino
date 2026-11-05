@@ -103,7 +103,9 @@ function renderTabs() {
     const queued = ch.live && !ch.watching;
     const t = el('div', 'tab' + (ch.live ? ' live' : '') + (queued ? ' queued' : '') + (ch.ageGate ? ' age' : '') + (ch.slug === active ? ' active' : ''));
     if (favs.has(ch.slug)) t.append(el('span', 'fav-star', '★ '));
-    if (ch.platform === 'twitch') { const p = el('span', 'plat twitch', 'T'); p.title = 'Canal da Twitch'; t.append(p); }
+    const plat = el('span', `plat ${ch.platform === 'twitch' ? 'twitch' : 'kick'}`, ch.platform === 'twitch' ? 'T' : 'K');
+    plat.title = ch.platform === 'twitch' ? 'Canal da Twitch' : 'Canal da Kick';
+    t.append(plat);
     const name = el('span', unread.has(ch.slug) && ch.slug !== active ? 'unread' : '', ch.displayName);
     t.append(name);
     if (ch.subscribed) { const s = el('span', 'tab-sub', 'SUB'); s.title = 'Você é sub: pontos em dobro'; t.append(s); }
@@ -213,11 +215,26 @@ function subBadge() {
 
 // ---------- Painel / status ----------
 function renderPanel() {
-  const rows = $('#panel-rows');
-  rows.replaceChildren();
   let totalPts = 0, gained = 0, watching = 0, live = 0;
   const queued = state.channels.filter((c) => c.live && !c.watching).length;
-  for (const ch of state.channels) {
+  // Uma tabela por plataforma, lado a lado, cada uma com o título e o total dela.
+  for (const platform of ['kick', 'twitch']) {
+  const group = state.channels.filter((c) => (c.platform || 'kick') === platform);
+  const table = $(`#pts-${platform}`);
+  const rows = table.querySelector('tbody');
+  rows.replaceChildren();
+  table.hidden = !group.length;
+  if (!group.length) continue;
+  const groupPts = group.reduce((t, c) => t + (c.points || 0), 0);
+  const groupLive = group.filter((c) => c.live).length;
+  const th = table.querySelector('caption');
+  th.replaceChildren();
+  th.append(el('span', `plat ${platform}`, platform === 'twitch' ? 'T' : 'K'),
+    el('b', null, platform === 'twitch' ? 'Twitch' : 'Kick'),
+    el('span', 'plat-sum', ` · ${groupLive}/${group.length} ao vivo · `
+      + (platform === 'twitch' && !group.some((c) => c.points != null) ? 'pts na loja' : `${groupPts.toLocaleString('pt-BR')} pts`)));
+  if (platform === 'twitch') th.title = 'Na Twitch o app ainda não lê o saldo de pontos: clique no canal e no botão de pontos para abrir a loja.';
+  for (const ch of group) {
     if (ch.points != null) totalPts += ch.points;
     if (ch.gained > 0) gained += ch.gained;
     if (ch.watching) watching++;
@@ -241,13 +258,15 @@ function renderPanel() {
     if (ch.gained > 0) tdPts.append(' ', el('span', 'gain', `+${ch.gained}`));
     const eta = etaText(ch);
     if (eta) { const e = el('div', 'eta', eta); e.title = 'Previsão pelo ritmo da Kick: 10 pts a cada 5 min (20 para subs)'; tdPts.append(e); }
-    const tdName = el('td', null, ch.platform === 'twitch' ? `${ch.displayName} (Twitch)` : ch.displayName);
+    const tdName = el('td', null, ch.displayName);
     if (ch.following) { const f = el('span', 'follow', '♥'); f.title = 'Você segue este canal'; tdName.append(' ', f); }
     if (ch.subscribed) tdName.append(' ', subBadge());
-    tr.append(tdName, tdStatus, tdPts, el('td', null, `${ch.watchedMin} min`));
+    tr.append(tdName, tdStatus, tdPts);
+    tr.title = `Assistido: ${ch.watchedMin} min`;
     tr.style.cursor = 'pointer';
     tr.onclick = () => select(ch.slug);
     rows.append(tr);
+  }
   }
   renderLimitTest();
   renderBonusBox();

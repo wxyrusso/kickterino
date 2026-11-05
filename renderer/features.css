@@ -79,3 +79,27 @@ button:disabled { opacity: .5; cursor: default; }
 /* Marca Streamterino: verde da Kick + roxo da Twitch */
 .brand { background: linear-gradient(135deg, #53fc18 0 50%, #9146ff 50% 100%) !important; color: #0e1014 !important; box-shadow: 0 0 16px rgba(145, 70, 255, .45) !important; }
 .brand-name { background: linear-gradient(90deg, #c9ffb0, #d9c4ff) !important; -webkit-background-clip: text !important; background-clip: text !important; color: transparent !important; }
+
+/* Selo K (Kick) nas abas e seções por plataforma no painel de pontos */
+.plat { display: inline-block; font-size: 9px; font-weight: 800; padding: 0 4px; margin-right: 5px; border-radius: 4px; vertical-align: 1px; }
+.plat.kick { background: #53fc18; color: #0e1014; }
+.plat.twitch { background: #9146ff; color: #fff; }
+/* Kick e Twitch lado a lado no painel de pontos */
+#panel { width: 600px; }
+#points-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; flex-shrink: 0;
+  /* linha vertical entre Twitch (esquerda) e Kick (direita), na altura toda */
+  background: linear-gradient(rgba(255, 255, 255, .14), rgba(255, 255, 255, .14)) center / 1px 100% no-repeat; }
+#points-cols table.pts { width: 100%; table-layout: fixed; }
+#points-cols table.pts[hidden] { display: none; }
+#points-cols table.pts caption { text-align: left; padding: 4px 4px 8px; font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#points-cols table.pts.kick caption { color: #53fc18; }
+#points-cols table.pts.twitch caption { color: #bf94ff; }
+#points-cols table.pts caption .plat { font-size: 10px; padding: 1px 5px; }
+#points-cols table.pts caption .plat-sum { color: var(--muted, #9aa); font-weight: 400; }
+#points-cols table.pts th:nth-child(1) { width: 42%; }
+#points-cols table.pts th:nth-child(2) { width: 36%; }
+#points-cols table.pts .pill { white-space: nowrap; font-size: 9px; padding: 1px 5px; }
+#points-cols table.pts td:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#points-cols table.pts.kick thead th { border-bottom: 2px solid rgba(83, 252, 24, .35); }
+#points-cols table.pts.twitch thead th { border-bottom: 2px solid rgba(145, 70, 255, .45); }
+@media (max-width: 1100px) { #panel { width: 480px; } }
