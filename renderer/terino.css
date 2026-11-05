@@ -63,3 +63,10 @@ button:hover { border-color: var(--accent); }
 
 /* Divisória */
 #splitter:hover, #splitter.dragging { background: var(--accent) !important; color: #0b1a1f; }
+
+/* Ícones das plataformas centralizados com o texto (abas, títulos do painel e das colunas) */
+.tab { display: inline-flex !important; align-items: center; }
+.tab .plat, .bonus-col-head .plat { vertical-align: initial; margin-right: 6px; }
+.bonus-col-head { display: flex; align-items: center; }
+.bonus-col-head .bonus-src { margin-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#points-cols table.pts caption .plat { vertical-align: middle; position: relative; top: -1px; }
