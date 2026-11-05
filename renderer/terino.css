@@ -1,0 +1,65 @@
+/* Tema do Terino: ciano do átomo sobre grafite azulado. Carregado por último.
+   O verde da Kick e o roxo da Twitch ficam só no que é de cada plataforma (ícones, login, colunas). */
+:root {
+  --accent: #9feaf9;
+  --accent-rgb: 159, 234, 249;
+  --kick: var(--accent);            /* o código antigo usa --kick como cor de destaque do app */
+  --kick-green: #53fc18;
+  --twitch-purple: #a970ff;
+  --bg: #0f1118;
+  --bg-2: #151925;
+  --bg-3: #1c2130;
+  --border: #29304a;
+  --muted: #8b93ab;
+  --glow: 0 0 18px rgba(var(--accent-rgb), .3);
+}
+
+body {
+  background:
+    radial-gradient(900px 500px at 0% 0%, rgba(var(--accent-rgb), .06), transparent 60%),
+    radial-gradient(700px 400px at 100% 100%, rgba(var(--accent-rgb), .04), transparent 60%),
+    var(--bg) !important;
+}
+
+/* Topo */
+#toolbar { background: linear-gradient(180deg, rgba(21, 25, 37, .96), rgba(21, 25, 37, .85)) !important; }
+.toggle:has(input:checked) { background: rgba(var(--accent-rgb), .08) !important; border-color: rgba(var(--accent-rgb), .3) !important; }
+.toggle input { accent-color: var(--accent); }
+button:hover { border-color: var(--accent); }
+
+/* Abas */
+.tab.active { background: linear-gradient(180deg, rgba(var(--accent-rgb), .16), rgba(var(--accent-rgb), .05)) !important; border-color: var(--accent) !important; }
+.tab input { border-color: var(--accent); }
+
+/* Painel */
+#panel h2::before { background: var(--accent) !important; }
+.pill.watching { background: var(--accent) !important; color: #0b1a1f !important; box-shadow: 0 0 10px rgba(var(--accent-rgb), .5) !important; }
+@keyframes earn-glow { 50% { box-shadow: 0 0 2px rgba(var(--accent-rgb), .2); } }
+.pill.warming { background: #1d3540 !important; color: var(--accent) !important; }
+.gain { color: var(--accent) !important; text-shadow: 0 0 8px rgba(var(--accent-rgb), .5) !important; }
+.follow { color: var(--accent) !important; }
+#btn-report { background: linear-gradient(90deg, #18242c, #1b2b35) !important; border-color: rgba(var(--accent-rgb), .4) !important; }
+
+/* Bônus: cada coluna na cor da plataforma (o tema não mexe nelas) */
+.bonus-chip.on { background: linear-gradient(90deg, rgba(var(--accent-rgb), .14), rgba(var(--accent-rgb), .03)); box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .35), var(--glow); border-color: var(--accent); }
+.bonus-chip.on .bonus-left { color: var(--accent); text-shadow: 0 0 10px rgba(var(--accent-rgb), .5); }
+.bonus-col.kick .bonus-chip.on { background: linear-gradient(90deg, rgba(83, 252, 24, .16), rgba(83, 252, 24, .03)); box-shadow: inset 0 0 0 1px rgba(83, 252, 24, .35), 0 0 18px rgba(83, 252, 24, .3); border-color: var(--kick-green); }
+.bonus-col.kick .bonus-chip.on .bonus-left { color: var(--kick-green); text-shadow: 0 0 10px rgba(83, 252, 24, .5); }
+.bonus-col.twitch .bonus-chip.on { border-color: var(--twitch-purple); }
+.bonus-col.twitch .bonus-chip.on .bonus-left { color: #c9a7ff; text-shadow: 0 0 10px rgba(145, 70, 255, .5); }
+
+/* Composer e pontos */
+#input:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 1px rgba(var(--accent-rgb), .25), var(--glow) !important; }
+#btn-points { border-color: rgba(var(--accent-rgb), .35) !important; color: var(--accent) !important; }
+#btn-points svg { fill: var(--accent) !important; }
+
+/* Login de cada plataforma continua na cor dela */
+#btn-login.ok { border-color: var(--kick-green) !important; color: var(--kick-green) !important; box-shadow: 0 0 14px rgba(83, 252, 24, .35) !important; }
+
+/* Avisos e relatório */
+.toast { background: linear-gradient(90deg, #142229, #111b21) !important; border-color: rgba(var(--accent-rgb), .5) !important; box-shadow: var(--glow), 0 8px 24px rgba(0, 0, 0, .5) !important; }
+.report-stat b { text-shadow: 0 0 14px rgba(var(--accent-rgb), .4) !important; }
+.report-bar i { background: linear-gradient(180deg, #c8f6ff, #5fd3ea) !important; box-shadow: 0 0 10px rgba(var(--accent-rgb), .4) !important; }
+
+/* Divisória */
+#splitter:hover, #splitter.dragging { background: var(--accent) !important; color: #0b1a1f; }
