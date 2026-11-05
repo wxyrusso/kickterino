@@ -1,6 +1,6 @@
 {
   "name": "kickterino",
-  "productName": "Terino",
+  "productName": "TK MultiStream",
   "version": "0.3.0",
   "description": "Cliente multi-chat da Kick e da Twitch que mantém você assistindo várias lives para acumular pontos do canal.",
   "author": "VinniiSaantos",
@@ -22,7 +22,7 @@
   },
   "build": {
     "appId": "com.streamterino.app",
-    "productName": "Terino",
+    "productName": "TK MultiStream",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -57,16 +57,16 @@
       "icon": "build/icon.png"
     },
     "nsis": {
-      "artifactName": "Terino-Setup.exe",
+      "artifactName": "TK-MultiStream-Setup.exe",
       "oneClick": true,
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Terino",
+      "shortcutName": "TK MultiStream",
       "runAfterFinish": true
     },
     "portable": {
-      "artifactName": "Terino-portatil.exe"
+      "artifactName": "TK-MultiStream-portatil.exe"
     },
     "linux": {
       "target": [
@@ -81,10 +81,10 @@
       "syncDesktopName": true
     },
     "appImage": {
-      "artifactName": "Terino-linux.AppImage"
+      "artifactName": "TK-MultiStream-linux.AppImage"
     },
     "deb": {
-      "artifactName": "Terino-linux.deb"
+      "artifactName": "TK-MultiStream-linux.deb"
     }
   },
   "desktopName": "kickterino.desktop"

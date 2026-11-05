@@ -1,4 +1,4 @@
-// Terino (antigo Kickterino) — processo principal.
+// TK MultiStream (antigo Kickterino) — processo principal.
 // Ideia: uma sessão de navegador persistente (você faz login na Kick uma vez),
 // uma janela oculta "api" em kick.com para consultar status/pontos, e uma janela
 // oculta e muda por canal AO VIVO tocando o player real — é isso que conta como "assistindo".
@@ -26,8 +26,8 @@ app.commandLine.appendSwitch('js-flags', '--max-semi-space-size=1');
 // roda sozinha, com as próprias vagas de live; o atalho de cada alt passa o --conta.
 const ACCOUNT = (process.argv.find((a) => a.startsWith('--conta=')) || '').slice(8)
   .toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 20) || null;
-const APP_TITLE = ACCOUNT ? `Terino — ${ACCOUNT}` : 'Terino';
-// O app agora se chama Terino, mas login, canais e histórico continuam na pasta antiga.
+const APP_TITLE = ACCOUNT ? `TK MultiStream — ${ACCOUNT}` : 'TK MultiStream';
+// O app agora se chama TK MultiStream, mas login, canais e histórico continuam na pasta antiga.
 const MAIN_DATA = path.join(app.getPath('appData'), 'Kickterino');
 // Pasta de dados alternativa (testes sem mexer na instalação de verdade).
 if (process.env.KICKTERINO_DATA) app.setPath('userData', process.env.KICKTERINO_DATA);
@@ -1532,7 +1532,7 @@ function setOpenAtLogin(on) {
   if (!on) return fs.rmSync(file, { force: true });
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const exe = process.env.APPIMAGE || process.execPath;
-  fs.writeFileSync(file, `[Desktop Entry]\nType=Application\nName=Terino\nExec="${exe}" --hidden\nIcon=kickterino\nX-GNOME-Autostart-enabled=true\n`);
+  fs.writeFileSync(file, `[Desktop Entry]\nType=Application\nName=TK MultiStream\nExec="${exe}" --hidden\nIcon=kickterino\nX-GNOME-Autostart-enabled=true\n`);
 }
 
 function showMain() {
@@ -1827,7 +1827,7 @@ ipcMain.handle('chat:send', async (_e, { chatroomId, content }) => {
 // Só uma instância: abrir o atalho de novo traz a janela existente para frente.
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', showMain);
-// Identificador próprio: a barra de tarefas usa o ícone do Terino, não o do Kickterino instalado.
+// Identificador próprio: a barra de tarefas usa o ícone do TK MultiStream, não o do Kickterino instalado.
 app.setAppUserModelId(ACCOUNT ? `com.streamterino.app.${ACCOUNT}` : 'com.streamterino.app');
 
 app.whenReady().then(() => {
@@ -1863,8 +1863,8 @@ app.whenReady().then(() => {
     if (!config.trayHintShown) {
       config.trayHintShown = true;
       saveConfig();
-      notify('O Terino continua farmando', isLinux
-        ? 'Ele fica na bandeja do sistema. Se o ícone não aparecer, abra o Terino de novo pelo menu de apps. Para sair de vez, use o botão Sair.'
+      notify('O TK MultiStream continua farmando', isLinux
+        ? 'Ele fica na bandeja do sistema. Se o ícone não aparecer, abra o TK MultiStream de novo pelo menu de apps. Para sair de vez, use o botão Sair.'
         : 'Ele fica na bandeja, perto do relógio. Para sair de vez: botão direito no ícone > Sair.', showMain);
     }
   });

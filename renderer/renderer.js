@@ -1,4 +1,4 @@
-// Terino — interface (abas por canal). O chat chega do processo principal,
+// TK MultiStream — interface (abas por canal). O chat chega do processo principal,
 // que o lê das janelas da live (só canais ao vivo que estão sendo assistidos).
 const MAX_MESSAGES = 400;
 
@@ -342,7 +342,7 @@ function applyState(s) {
   if (!active && state.channels.length) active = state.channels[0].slug;
   if (!(state.pokeIdle || {}).open) pokeMode = false; // o jogo foi fechado (ou caiu)
   // Conta alt: o nome dela aparece na marca e no título, para não confundir as janelas.
-  const appName = state.account ? `Terino · ${state.account}` : 'Terino';
+  const appName = state.account ? `TK MultiStream · ${state.account}` : 'TK MultiStream';
   // No topo fica só o ícone; nas alts, um selinho com o nome da conta.
   const tag = state.account || '';
   if ($('.brand-name').textContent !== tag) { $('.brand-name').textContent = tag; $('.brand-name').hidden = !tag; }
@@ -585,7 +585,7 @@ async function showReport() {
   const r = await window.kick.getReport();
   const card = el('div', 'report');
   const head = el('div', 'report-head');
-  head.append(el('span', 'brand', 'T'), el('b', null, ' Terino · minha semana'), el('span', 'report-date', new Date().toLocaleDateString('pt-BR')));
+  head.append(el('span', 'brand', 'TK'), el('b', null, ' TK MultiStream · minha semana'), el('span', 'report-date', new Date().toLocaleDateString('pt-BR')));
   const big = el('div', 'report-big');
   const stat = (value, label) => { const d = el('div', 'report-stat'); d.append(el('b', null, value), el('span', null, label)); return d; };
   big.append(stat(r.gained.toLocaleString('pt-BR'), 'pontos ganhos'), stat(String(r.bought.reduce((t, b) => t + b.count, 0)), 'bônus comprados'),
@@ -626,7 +626,7 @@ async function showReport() {
 function showIntro(kind) {
   const wrap = el('div', 'intro');
   if (kind === 'welcome') {
-    wrap.append(el('h3', null, 'Bem-vindo ao Terino 👋'));
+    wrap.append(el('h3', null, 'Bem-vindo ao TK MultiStream 👋'));
     const steps = [
       ['1. Faça login', 'Clique em Login Kick e entre com sua conta (e-mail, Google, Apple ou Discord).'],
       ['2. Escolha seu bônus', 'Em Bônus, deixe Automático ou escolha XP, Capture Boost ou Secret Lure.'],
