@@ -66,6 +66,8 @@ button:disabled { opacity: .5; cursor: default; }
 .tab .plat { display: inline-block; font-size: 9px; font-weight: 800; padding: 0 4px; margin-right: 5px; border-radius: 4px; vertical-align: 1px; }
 .tab .plat.twitch { background: #9146ff; color: #fff; }
 #btn-twitch.warn { border-color: #9146ff; }
+/* Login da Twitch feito: roxo, como o da Kick fica verde. */
+#btn-login-twitch.ok, #btn-login-twitch.ok:hover { border-color: #9146ff; color: #bf94ff; box-shadow: 0 0 18px rgba(145, 70, 255, .45); }
 .twitch-modal { display: flex; flex-direction: column; gap: 6px; max-width: 460px; }
 .twitch-modal p { font-size: 12px; line-height: 1.5; opacity: .85; margin: 0 0 6px; }
 .twitch-modal label { font-size: 11px; font-weight: 700; opacity: .7; }
