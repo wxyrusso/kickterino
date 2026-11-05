@@ -727,6 +727,10 @@ function findPokeBonus(obj, depth = 0, out = {}) {
 // retângulo da área do chat e o jogo é desenhado por cima dele. Trocar para um canal só esconde o
 // jogo, que continua rodando; "Fechar" encerra a sessão do jogo.
 let pokeView = null;
+const POKEIDLE_FIX_CSS = `
+  #mk-corpo .mk-grade > .mk-card { min-height: max-content; }
+  #mk-corpo .mk-grade { grid-auto-rows: max-content; grid-template-rows: none; }
+`;
 let pokeVisible = false;
 let pokeBounds = null;
 
@@ -762,6 +766,11 @@ function ensurePokeView() {
   mainWin.contentView.addChildView(pokeView);
   attachPokeReader(pokeView.webContents);
   pokeView.webContents.on('render-process-gone', () => closePokeIdle());
+  // Na área do app o Market espremia os cartões para caber na altura: o nome e o botão Comprar
+  // ficavam cortados embaixo. Os cartões ficam com a altura deles e a grade rola.
+  pokeView.webContents.on('dom-ready', () => {
+    pokeView && pokeView.webContents.insertCSS(POKEIDLE_FIX_CSS).catch(() => {});
+  });
   pokeView.webContents.loadURL(POKEIDLE_URL);
   pokeView.setVisible(false);
   return pokeView;
