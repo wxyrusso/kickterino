@@ -3,7 +3,7 @@
 // uma janela oculta "api" em kick.com para consultar status/pontos, e uma janela
 // oculta e muda por canal AO VIVO tocando o player real — é isso que conta como "assistindo".
 const {
-  app, BrowserWindow, dialog, ipcMain, session, Tray, Menu, Notification, nativeImage, powerSaveBlocker, powerMonitor, net,
+  app, BrowserWindow, dialog, ipcMain, session, Tray, Menu, Notification, nativeImage, powerSaveBlocker, powerMonitor, net, webContents,
 } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
@@ -21,10 +21,17 @@ app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,Ba
 // O JavaScript de cada página reserva menos memória "jovem".
 app.commandLine.appendSwitch('js-flags', '--max-semi-space-size=1');
 
+// Contas extras (alts): "--conta=alt1" abre uma cópia separada do app, com pasta de dados própria
+// (logins da Kick, da Twitch e do PokeIdle, canais, bônus e histórico só daquela conta). Cada cópia
+// roda sozinha, com as próprias vagas de live; o atalho de cada alt passa o --conta.
+const ACCOUNT = (process.argv.find((a) => a.startsWith('--conta=')) || '').slice(8)
+  .toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 20) || null;
+const APP_TITLE = ACCOUNT ? `Streamterino — ${ACCOUNT}` : 'Streamterino';
+// O app agora se chama Streamterino, mas login, canais e histórico continuam na pasta antiga.
+const MAIN_DATA = path.join(app.getPath('appData'), 'Kickterino');
 // Pasta de dados alternativa (testes sem mexer na instalação de verdade).
 if (process.env.KICKTERINO_DATA) app.setPath('userData', process.env.KICKTERINO_DATA);
-// O app agora se chama Streamterino, mas login, canais e histórico continuam na pasta antiga.
-else app.setPath('userData', path.join(app.getPath('appData'), 'Kickterino'));
+else app.setPath('userData', ACCOUNT ? `${MAIN_DATA}-${ACCOUNT}` : MAIN_DATA);
 
 const PARTITION = 'persist:kick';
 const KICK = 'https://kick.com';
@@ -72,6 +79,15 @@ let firstRun = false;
 function loadConfig() {
   firstRun = !fs.existsSync(configPath());
   try { config = { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(configPath(), 'utf8')) }; } catch {}
+  // Conta alt nova: começa com a lista de canais e o app da Twitch da conta principal (os logins não).
+  if (firstRun && ACCOUNT) {
+    try {
+      const main = JSON.parse(fs.readFileSync(path.join(MAIN_DATA, 'config.json'), 'utf8'));
+      for (const k of ['channels', 'favorites', 'seenDefaults', 'twitchClientId', 'twitchClientSecret', 'maxWatchers', 'lowQuality', 'rotation', 'bonusTarget', 'configVersion', 'lastSeenVersion']) {
+        if (main[k] !== undefined) config[k] = main[k];
+      }
+    } catch {}
+  }
   // Canais oficiais novos de uma versão nova entram uma vez; os que a pessoa removeu não voltam.
   const seen = new Set(config.seenDefaults || config.channels);
   for (const slug of DEFAULT_CONFIG.channels) {
@@ -378,13 +394,17 @@ function startWatcher(slug) {
 }
 
 // Twitch: o resumo de pontos (saldo e baú) não carrega na página da live escondida, mas carrega
-// no chat popout. Cada live da Twitch assistida ganha um chat popout invisível, só para isso.
-const twitchPointsWins = new Map(); // slug -> BrowserWindow
-function ensureTwitchPointsWin(slug) {
-  let win = twitchPointsWins.get(slug);
-  if (win && !win.isDestroyed()) return win;
-  win = new BrowserWindow({
-    width: 400, height: 640, x: 0, y: 0, show: false, title: `Twitch — pontos — ${nameOf(slug)}`,
+// no chat popout. Em vez de um chat aberto por live (pesado), UMA janela invisível passa pelos
+// canais da Twitch de tempos em tempos: lê o saldo de todos (para perceber os bônus comprados) e
+// coleta o baú dos canais assistidos. Entre uma passada e outra ela fica fechada.
+const SWEEP_GAP_MS = 3 * 60 * 1000;  // pausa entre o fim de uma passada e o começo da próxima
+let sweepWin = null;
+let sweeping = false;
+
+function openSweepWin() {
+  if (sweepWin && !sweepWin.isDestroyed()) return sweepWin;
+  const win = new BrowserWindow({
+    width: 400, height: 640, x: 0, y: 0, show: false, title: 'Twitch — pontos',
     type: 'toolbar', skipTaskbar: true, focusable: false, opacity: 0, autoHideMenuBar: true,
     webPreferences: { partition: TWITCH_PARTITION, backgroundThrottling: false, spellcheck: false },
   });
@@ -393,22 +413,63 @@ function ensureTwitchPointsWin(slug) {
   // Igual às lives escondidas: sem imagens nem fontes (ninguém olha; o saldo é texto).
   const wcId = win.webContents.id;
   watcherIds.add(wcId);
-  win.on('closed', () => watcherIds.delete(wcId));
-  win.loadURL(`${TWITCH}/popout/${nameOf(slug)}/chat`);
+  win.on('closed', () => { watcherIds.delete(wcId); if (sweepWin === win) sweepWin = null; });
   if (isLinux) win.hide(); else win.showInactive();
-  win.on('closed', () => { if (twitchPointsWins.get(slug) === win) twitchPointsWins.delete(slug); });
-  win.webContents.on('render-process-gone', () => setImmediate(() => { if (!win.isDestroyed()) win.destroy(); }));
-  twitchPointsWins.set(slug, win);
+  sweepWin = win;
   return win;
 }
-function closeTwitchPointsWin(slug) {
-  const win = twitchPointsWins.get(slug);
-  twitchPointsWins.delete(slug);
+
+function closeSweepWin() {
+  const win = sweepWin;
+  sweepWin = null;
   if (win && !win.isDestroyed()) win.destroy();
 }
 
+// Espera o saldo aparecer no chat (ele chega alguns segundos depois da página).
+async function waitTwitchBalance(win, ms = 15 * 1000) {
+  const until = Date.now() + ms;
+  while (Date.now() < until && !win.isDestroyed()) {
+    const ok = await win.webContents.executeJavaScript(
+      `!!document.querySelector('[data-test-selector="copo-balance-string"], [data-test-selector="balance-string"]')`,
+    ).catch(() => false);
+    if (ok) return true;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
+}
+
+async function twitchSweep() {
+  if (sweeping) return;
+  const keys = twitchKeys();
+  if (!config.farming || !twitchLoggedIn || !keys.length) return;
+  sweeping = true;
+  try {
+    // Os assistidos primeiro (baú), depois os outros (saldo e compras).
+    const watched = keys.filter((k) => watchers.has(k));
+    const order = [...watched, ...keys.filter((k) => !watched.includes(k))];
+    for (const key of order) {
+      if (!config.channels.includes(key)) continue;
+      const win = openSweepWin();
+      await withTimeout(win.loadURL(`${TWITCH}/popout/${nameOf(key)}/chat`), 25 * 1000).catch(() => {});
+      if (win.isDestroyed()) break;
+      await waitTwitchBalance(win);
+      const s = status.get(key);
+      if (s) await checkTwitchPage(key, win, s);
+    }
+  } catch {} finally {
+    sweeping = false;
+    closeSweepWin();
+    if (configDirty) { configDirty = false; saveConfig(); }
+    send('status', snapshot());
+    updateTray();
+  }
+}
+
+function scheduleTwitchSweep(delay = SWEEP_GAP_MS) {
+  setTimeout(() => twitchSweep().finally(() => scheduleTwitchSweep()), delay);
+}
+
 function stopWatcher(slug) {
-  closeTwitchPointsWin(slug);
   const win = watchers.get(slug);
   if (!win) return;
   watchers.delete(slug);
@@ -471,7 +532,7 @@ function matchPurchase(drop) {
 
 function registerPurchases(slug, drop) {
   const now = Date.now();
-  matchPurchase(drop).forEach((cost, i) => config.purchases.push({ t: now + i, cost, slug }));
+  matchPurchase(drop).forEach((cost, i) => config.purchases.push({ t: now + i, cost, slug, platform: platformOf(slug) }));
   config.purchases = config.purchases.filter((p) => now - p.t < KEEP_PURCHASES_MS);
   configDirty = true;
 }
@@ -858,6 +919,12 @@ async function checkTwitchPage(slug, win, s) {
     s.lastGainAt = Date.now();
     addDaily(p.value - s.points);
   }
+  // Saldo caiu (bônus comprado na loja da Twitch): entra no cronômetro, como na Kick. Com número
+  // arredondado (acima de 1.000) só vale queda grande, e a combinação de bônus tem de bater.
+  if (s.points != null && p.value < s.points && s.points - p.value >= (p.approx || s.pointsApprox ? 280 : 250)) {
+    registerPurchases(slug, s.points - p.value);
+    updateTray();
+  }
   s.points = p.value;
   s.pointsApprox = p.approx;
 }
@@ -865,7 +932,6 @@ async function checkTwitchPage(slug, win, s) {
 async function checkPlayers() {
   for (const [slug, win] of watchers) {
     const s = status.get(slug);
-    if (s && !win.isDestroyed() && platformOf(slug) === 'twitch') await checkTwitchPage(slug, ensureTwitchPointsWin(slug), s);
     if (!s || win.isDestroyed() || userOpened.has(win)) continue;
     const gateSelector = platformOf(slug) === 'twitch'
       ? '[data-a-target="player-overlay-mature-accept"], [data-a-target="content-classification-gate-overlay-start-watching-button"]'
@@ -905,6 +971,18 @@ function earningState(slug, now) {
 
 // Histórico em points-log.jsonl (pasta de dados do app): uma linha por minuto com pontos e
 // estado de cada live. Serve para conferir se os pontos sobem com o app minimizado.
+// Memória de cada janela (MB), para achar o que pesa: 'main' é a interface, o resto é a página aberta.
+function memoryByWindow() {
+  const byPid = new Map(app.getAppMetrics().map((m) => [m.pid, Math.round(m.memory.workingSetSize / 1024)]));
+  return webContents.getAllWebContents().filter((wc) => !wc.isDestroyed()).map((wc) => {
+    let what = 'outra';
+    try {
+      const u = new URL(wc.getURL());
+      what = u.protocol === 'file:' ? 'main' : (u.hostname.replace(/^www./, '') + u.pathname).slice(0, 40);
+    } catch {}
+    return [what, byPid.get(wc.getOSProcessId()) || 0];
+  });
+}
 function logHistory() {
   const now = Date.now();
   const channels = {};
@@ -921,7 +999,7 @@ function logHistory() {
   const line = JSON.stringify({
     t: new Date(now).toISOString(), mainMinimized: !!mainWin && mainWin.isMinimized(),
     mainFocused: !!mainWin && mainWin.isFocused(), loggedIn, memoryMB: snapshot().memoryMB,
-    maxWatchers: config.maxWatchers, limitTest: limitTestSnapshot(), channels,
+    maxWatchers: config.maxWatchers, limitTest: limitTestSnapshot(), channels, windows: memoryByWindow(),
   });
   const file = path.join(app.getPath('userData'), 'points-log.jsonl');
   try {
@@ -1132,6 +1210,7 @@ function snapshot() {
     sleepMode: config.sleepMode,
     favorites: config.favorites,
     username,
+    account: ACCOUNT,
     version: app.getVersion(),
     intro: config.lastSeenVersion === app.getVersion() ? null : (firstRun ? 'welcome' : 'news'),
     bonuses: activeBonuses(now, 'kick'),
@@ -1248,7 +1327,7 @@ function setFarming(on) {
 }
 
 // O app portátil roda de uma pasta temporária: o que abre com o Windows é o .exe original.
-const LOGIN_ITEM = { path: process.env.PORTABLE_EXECUTABLE_FILE || process.execPath, args: ['--hidden'] };
+const LOGIN_ITEM = { path: process.env.PORTABLE_EXECUTABLE_FILE || process.execPath, args: ['--hidden', ...(ACCOUNT ? [`--conta=${ACCOUNT}`] : [])] };
 // No Linux, abrir com o sistema é um atalho na pasta autostart (o AppImage informa o próprio caminho).
 const autostartFile = () => path.join(process.env.XDG_CONFIG_HOME || path.join(app.getPath('home'), '.config'), 'autostart', 'kickterino.desktop');
 const isOpenAtLogin = () => (isLinux ? fs.existsSync(autostartFile()) : app.getLoginItemSettings(LOGIN_ITEM).openAtLogin);
@@ -1282,10 +1361,10 @@ function updateTray() {
   const now = Date.now();
   const active = PLATFORMS.flatMap((pl) => activeBonuses(now, pl).filter((b) => b.endsAt)
     .map((b) => `${pl === 'twitch' ? 'T' : 'K'} ${b.name.replace('+15% ', '')} ${clock(b.endsAt - now)}`));
-  tray.setToolTip(`Streamterino — ${config.farming ? `${watchers.size} assistindo` : 'farm pausado'}${gained ? ` · +${gained} pts` : ''}`
+  tray.setToolTip(`${APP_TITLE} — ${config.farming ? `${watchers.size} assistindo` : 'farm pausado'}${gained ? ` · +${gained} pts` : ''}`
     + (active.length ? `\nBônus ativo: ${active.join(' · ')}` : ''));
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Abrir Streamterino', click: showMain },
+    { label: `Abrir ${APP_TITLE}`, click: showMain },
     { label: 'Farmar pontos', type: 'checkbox', checked: config.farming, click: (item) => setFarming(item.checked) },
     { type: 'separator' },
     { label: 'Sair', click: quitApp },
@@ -1550,13 +1629,13 @@ ipcMain.handle('chat:send', async (_e, { chatroomId, content }) => {
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', showMain);
 // Identificador próprio: a barra de tarefas usa o ícone do Streamterino, não o do Kickterino instalado.
-app.setAppUserModelId('com.streamterino.app');
+app.setAppUserModelId(ACCOUNT ? `com.streamterino.app.${ACCOUNT}` : 'com.streamterino.app');
 
 app.whenReady().then(() => {
   loadConfig();
   setupSession();
   mainWin = new BrowserWindow({
-    width: 1100, height: 760, backgroundColor: '#1a1a1a', title: 'Streamterino',
+    width: 1100, height: 760, backgroundColor: '#1a1a1a', title: APP_TITLE,
     show: !process.argv.includes('--hidden'), // ao iniciar com o Windows, abre direto na bandeja
     icon: path.join(__dirname, 'build', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false },
@@ -1593,6 +1672,7 @@ app.whenReady().then(() => {
   apiReady.then(poll).then(() => {
     if (process.env.KICKTERINO_LIMIT_AUTOSTART) { startLimitTest(); reconcileWatchers(); }
   });
+  scheduleTwitchSweep(90 * 1000); // primeira passada pelos saldos da Twitch logo depois de abrir
   setInterval(poll, POLL_MS);
   setInterval(() => send('status', snapshot()), 15 * 1000);
   setInterval(() => { checkBonusEnding(); updateTray(); }, 30 * 1000);

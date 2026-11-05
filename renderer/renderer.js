@@ -289,6 +289,9 @@ function applyState(s) {
     if (was === true && !ch.live) pushMessage(ch.slug, systemMessage(`${ch.displayName} está offline.`));
   }
   if (!active && state.channels.length) active = state.channels[0].slug;
+  // Conta alt: o nome dela aparece na marca e no título, para não confundir as janelas.
+  const appName = state.account ? `Streamterino · ${state.account}` : 'Streamterino';
+  if ($('.brand-name').textContent !== appName) { $('.brand-name').textContent = appName; document.title = appName; }
   $('#farming').checked = state.farming;
   $('#low-quality').checked = state.lowQuality;
   $('#rotation').checked = state.rotation;
