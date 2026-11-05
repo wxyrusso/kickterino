@@ -334,7 +334,8 @@ function makeInvisible(win) {
   win.setOpacity(0);
   win.setIgnoreMouseEvents(true);
   win.setFocusable(false);
-  win.setSize(480, 270);
+  // Na Twitch a janela precisa ser larga para o chat aparecer: é nele que ficam o saldo e o baú.
+  if (win.isTwitchWatcher) win.setSize(1280, 720); else win.setSize(480, 270);
   win.setPosition(0, 0);
   if (isLinux) win.hide();
   else win.showInactive();
@@ -353,6 +354,7 @@ function startWatcher(slug) {
   const wcId = win.webContents.id;
   watcherIds.add(wcId);
   win.on('closed', () => watcherIds.delete(wcId));
+  win.isTwitchWatcher = platformOf(slug) === 'twitch';
   instrumentWatcher(slug, win);
   win.loadURL(channelUrl(slug));
   makeInvisible(win);
@@ -759,9 +761,64 @@ async function refreshChannel(slug) {
 // Confere cada live oculta: aviso +18 (só a pessoa pode confirmar) e estado do player, para o
 // histórico. O tempo do vídeo NÃO indica se a live conta: no player da Kick ele fica em 0–1 s
 // mesmo com os pontos subindo, então quem diz se está valendo é o saldo (ver lastGainAt).
+// ---------- Twitch: saldo e baú de bônus na página da live ----------
+// A cada rodada o app olha o resumo de pontos do chat da live (a mesma página que está tocando):
+// lê o saldo e, se o baú de bônus (+50) estiver disponível, clica nele, como a pessoa faria.
+const TWITCH_PAGE_SCRIPT = `(() => {
+  const q = (sel) => document.querySelector(sel);
+  let btn = null;
+  const icon = q('.claimable-bonus__icon');
+  if (icon) btn = icon.closest('button');
+  if (!btn) btn = [...document.querySelectorAll('button[aria-label]')]
+    .find((b) => /claim bonus|resgatar b[oô]nus|coletar b[oô]nus|obter b[oô]nus/i.test(b.getAttribute('aria-label') || ''));
+  let claimed = false;
+  if (btn && !btn.disabled) { btn.click(); claimed = true; }
+  const bal = q('[data-test-selector="balance-string"]');
+  return {
+    claimed,
+    balance: bal ? bal.textContent.trim() : null,
+    summary: !!q('[data-test-selector="community-points-summary"], .community-points-summary'),
+  };
+})()`;
+
+// "850" -> 850 (exato); "1,2 mil" / "1.2K" -> 1200 (aproximado); "3,4 mi" / "3.4M" -> 3.400.000.
+function parseTwitchPoints(text) {
+  if (!text) return null;
+  const t = String(text).toLowerCase().replace(/\s+/g, '');
+  const mult = /(mi|m)$/.test(t) && !/mil$/.test(t) ? 1e6 : /(mil|k)$/.test(t) ? 1e3 : 1;
+  if (mult === 1) {
+    const n = Number(t.replace(/[^\d]/g, ''));
+    return Number.isFinite(n) && /\d/.test(t) ? { value: n, approx: false } : null;
+  }
+  const n = Number(t.replace(/[a-z]/g, '').replace(',', '.'));
+  return Number.isFinite(n) ? { value: Math.round(n * mult), approx: true } : null;
+}
+
+async function checkTwitchPage(slug, win, s) {
+  const info = await withTimeout(win.webContents.executeJavaScript(TWITCH_PAGE_SCRIPT), 10 * 1000).catch(() => null);
+  if (!info) return;
+  s.chatVisible = info.summary;
+  if (info.claimed) {
+    s.bonusClaims = (s.bonusClaims || 0) + 1;
+    s.lastClaimAt = Date.now();
+    if (process.env.KICKTERINO_DEBUG) console.log(`BAU ${slug}`);
+  }
+  const p = parseTwitchPoints(info.balance);
+  if (!p) return;
+  // Só conta ganho com número exato dos dois lados (o arredondado sobe e desce sozinho).
+  if (!p.approx && s.points != null && !s.pointsApprox && p.value > s.points) {
+    s.gainedTotal = (s.gainedTotal || 0) + (p.value - s.points);
+    s.lastGainAt = Date.now();
+    addDaily(p.value - s.points);
+  }
+  s.points = p.value;
+  s.pointsApprox = p.approx;
+}
+
 async function checkPlayers() {
   for (const [slug, win] of watchers) {
     const s = status.get(slug);
+    if (s && !win.isDestroyed() && platformOf(slug) === 'twitch') await checkTwitchPage(slug, win, s);
     if (!s || win.isDestroyed() || userOpened.has(win)) continue;
     const gateSelector = platformOf(slug) === 'twitch'
       ? '[data-a-target="player-overlay-mature-accept"], [data-a-target="content-classification-gate-overlay-start-watching-button"]'
@@ -791,8 +848,9 @@ const EARN_WINDOW_MS = 13 * 60 * 1000;
 function earningState(slug, now) {
   const s = status.get(slug) || {};
   if (!watchers.has(slug)) return null;
-  // Na Twitch o app não lê o saldo, então não dá para saber se está rendendo.
-  if (platformOf(slug) === 'twitch') return 'watching';
+  // Na Twitch o saldo acima de 1.000 vem arredondado ("1,2 mil"): sem ver o número subir, fica
+  // "assistindo" (nunca "sem pontos", que tiraria a live da vaga).
+  if (platformOf(slug) === 'twitch') return s.lastGainAt && now - s.lastGainAt < EARN_WINDOW_MS ? 'earning' : 'watching';
   if (s.lastGainAt && now - s.lastGainAt < EARN_WINDOW_MS) return 'earning';
   if (now - (s.watchingSince || now) < EARN_WINDOW_MS) return 'warming';
   return 'idle';
@@ -1045,7 +1103,7 @@ function snapshot() {
         slug, platform: platformOf(slug), name: nameOf(slug),
         displayName: s.displayName || nameOf(slug), live: !!s.live, liveUnknown: s.live === undefined && platformOf(slug) === 'twitch',
         viewers: s.viewers || 0,
-        title: s.title || '', chatroomId: s.chatroomId || null, points: s.points ?? null,
+        title: s.title || '', chatroomId: s.chatroomId || null, points: s.points ?? null, pointsApprox: !!s.pointsApprox, bonusClaims: s.bonusClaims || 0, lastClaimAt: s.lastClaimAt || null,
         watching: watchers.has(slug), ageGate: !!s.ageGate, earning: earningState(slug, now),
         following: s.following ?? null, subscribed: !!s.subscribed,
         gained: s.gainedTotal || 0,

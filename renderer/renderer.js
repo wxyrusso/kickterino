@@ -164,7 +164,7 @@ function renderHeader() {
     ? 'Só leitura: conecte o chat no botão "Twitch" para enviar mensagens'
     : ch.chatroomId ? `Enviar mensagem em ${ch.displayName}…` : 'Carregando canal…';
   const pts = $('#points-val');
-  const text = ch.points != null ? ch.points.toLocaleString('pt-BR') : '—';
+  const text = ch.points != null ? `${ch.pointsApprox ? '≈' : ''}${ch.points.toLocaleString('pt-BR')}` : '—';
   if (pts.textContent !== text) {
     if (pts.textContent !== '—' && ch.points != null) {
       const btn = $('#btn-points');
@@ -232,8 +232,8 @@ function renderPanel() {
   th.append(el('span', `plat ${platform}`, platform === 'twitch' ? 'T' : 'K'),
     el('b', null, platform === 'twitch' ? 'Twitch' : 'Kick'),
     el('span', 'plat-sum', ` · ${groupLive}/${group.length} ao vivo · `
-      + (platform === 'twitch' && !group.some((c) => c.points != null) ? 'pts na loja' : `${groupPts.toLocaleString('pt-BR')} pts`)));
-  if (platform === 'twitch') th.title = 'Na Twitch o app ainda não lê o saldo de pontos: clique no canal e no botão de pontos para abrir a loja.';
+      + (platform === 'twitch' && !group.some((c) => c.points != null) ? 'saldo aparece ao assistir' : `${group.some((c) => c.pointsApprox) ? '≈' : ''}${groupPts.toLocaleString('pt-BR')} pts`)));
+  if (platform === 'twitch') th.title = 'O saldo de cada canal da Twitch é lido da página da live enquanto ela está sendo assistida (acima de 1.000 vem arredondado).';
   for (const ch of group) {
     if (ch.points != null) totalPts += ch.points;
     if (ch.gained > 0) gained += ch.gained;
@@ -248,13 +248,14 @@ function renderPanel() {
       : ch.liveUnknown ? el('span', 'pill', '?')
       : ch.live ? el('span', 'pill queue', state.rotation ? 'NA FILA' : 'SEM VAGA') : el('span', 'pill', 'offline');
     if (ch.earning === 'warming') st.title = 'A Kick dá a primeira contagem ~6–7 min depois que a live abre.';
-    if (ch.earning === 'watching') st.title = 'Na Twitch o app não lê o saldo: confira os pontos na loja do canal.';
+    if (ch.earning === 'watching') st.title = 'Assistindo. O saldo da Twitch acima de 1.000 vem arredondado, então o app não mede o ganho; o baú de bônus é coletado sozinho.';
     if (ch.liveUnknown) st.title = 'Configure a API da Twitch para saber quem está ao vivo.';
     if (ch.earning === 'idle') st.title = 'Tocando há mais de 13 min sem o saldo subir. A Kick só conta ~2 lives por vez.';
     if (ch.live && ch.goalLeft != null && state.rotation) st.title = `${st.title || ''}\nFaltam ${ch.goalLeft} pts para ${ch.goal}`.trim();
     const tdStatus = el('td'); tdStatus.append(st);
     if (ch.error) tdStatus.title = ch.error;
-    const tdPts = el('td', null, ch.points != null ? ch.points.toLocaleString('pt-BR') : '—');
+    const tdPts = el('td', null, ch.points != null ? `${ch.pointsApprox ? '≈' : ''}${ch.points.toLocaleString('pt-BR')}` : '—');
+    if (ch.bonusClaims) { const bz = el('span', 'claims', ` 🎁${ch.bonusClaims}`); bz.title = `Baús de bônus coletados nesta sessão: ${ch.bonusClaims}`; tdPts.append(bz); }
     if (ch.gained > 0) tdPts.append(' ', el('span', 'gain', `+${ch.gained}`));
     const eta = etaText(ch);
     if (eta) { const e = el('div', 'eta', eta); e.title = 'Previsão pelo ritmo da Kick: 10 pts a cada 5 min (20 para subs)'; tdPts.append(e); }
