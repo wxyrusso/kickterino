@@ -1051,7 +1051,8 @@ function setOpenAtLogin(on) {
 }
 
 function showMain() {
-  if (!mainWin) return;
+  // Abrir o atalho enquanto o app ainda está fechando chama isto com a janela já destruída.
+  if (!mainWin || mainWin.isDestroyed() || app.isQuitting) return;
   if (mainWin.isMinimized()) mainWin.restore();
   mainWin.show();
   mainWin.focus();
