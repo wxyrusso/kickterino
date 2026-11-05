@@ -267,7 +267,7 @@ const REDEEM_WATCH_SCRIPT = `(() => {
 
 const BONUS_BY_WORD = [[/secret\s*lure|lure/i, 1000], [/capture\s*boost|capture|captura/i, 500], [/\bxp\b/i, 300]];
 
-// "wxyrusso_ resgatou Bônus de +15% Capture Boost (10h) 5.000" -> { cost: 500, hours: 10 }
+// "sua_conta resgatou Bônus de +15% Capture Boost (10h) 5.000" -> { cost: 500, hours: 10 }
 function parseRedemption(text, login) {
   const t = String(text || '');
   if (!login || !new RegExp(`(^|\\s)${login.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+(resgatou|redeemed)\\b`, 'i').test(t)) return null;
