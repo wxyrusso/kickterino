@@ -976,12 +976,20 @@ $('#rotation').onchange = async (e) => applyState(await window.kick.setRotation(
 $('#bonus-target').onchange = async (e) => applyState(await window.kick.setBonusTarget(Number(e.target.value)));
 $('#low-quality').onchange = async (e) => applyState(await window.kick.setLowQuality(e.target.checked));
 $('#max-watchers').onchange = async (e) => applyState(await window.kick.setMaxWatchers(e.target.value));
-function togglePanel() {
+function togglePanel(force) {
   const p = $('#panel');
-  p.hidden = !p.hidden;
+  p.hidden = typeof force === 'boolean' ? !force : !p.hidden;
   $('#btn-panel').textContent = p.hidden ? 'Pontos ▸' : 'Pontos ◂';
+  // » recolhe (o jogo/chat cresce para a direita); « traz o painel de volta.
+  $('#panel-toggle').textContent = p.hidden ? '«' : '»';
+  $('#panel-toggle').title = p.hidden ? 'Mostrar o painel de pontos' : 'Recolher o painel de pontos (o jogo fica maior)';
+  try { localStorage.setItem('panelOpen', p.hidden ? '0' : '1'); } catch {}
 }
-$('#btn-panel').onclick = togglePanel;
+$('#btn-panel').onclick = () => togglePanel();
+$('#panel-toggle').addEventListener('mousedown', (e) => e.stopPropagation()); // clicar não começa o arraste
+$('#panel-toggle').onclick = () => togglePanel();
+// Volta como estava da última vez.
+try { if (localStorage.getItem('panelOpen') === '1') togglePanel(true); else togglePanel(false); } catch {}
 
 // ---------- Divisória: tamanho do jogo/chat x painel ----------
 // O jogo é desenhado por cima da página e "rouba" o mouse: some durante o arraste e volta no fim.

@@ -139,3 +139,11 @@ body.poke-focus #accounts-bar { display: none !important; }
 .tab.poke-grid { color: #ffd27a; border-color: rgba(245, 165, 36, .45); }
 .tab.poke-grid.on, #focus-bar .focus-grid.on { background: rgba(245, 165, 36, .14); }
 .bonus-matrix th:first-child { width: 27%; }
+
+/* Botão de recolher o painel, no meio da divisória */
+#splitter { flex-direction: column; gap: 10px; }
+#panel-toggle { width: 22px; height: 44px; padding: 0; border-radius: 7px; font-size: 14px; font-weight: 800; line-height: 1; cursor: pointer; background: var(--bg-3); color: var(--accent); border: 1px solid rgba(var(--accent-rgb), .45); box-shadow: 0 0 10px rgba(var(--accent-rgb), .2); flex: none; }
+#panel-toggle:hover { background: rgba(var(--accent-rgb), .2); color: #fff; }
+#splitter:has(+ #panel[hidden]) { flex-basis: 24px; }
+#splitter { flex-basis: 24px; }
+#panel[hidden] { display: none !important; }
