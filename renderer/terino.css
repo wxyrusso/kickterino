@@ -97,3 +97,16 @@ body.poke-focus #toolbar, body.poke-focus #tabs, body.poke-focus #panel, body.po
 #focus-bar .focus-acc.on { border-color: #f5a524; color: #ffd27a; }
 #focus-bar .focus-fill { flex: 1; }
 .tab.poke-full { color: var(--accent); border-color: rgba(var(--accent-rgb), .45); }
+
+/* Barra de contas (topo) */
+#accounts-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px 0; background: rgba(21, 25, 37, .96); flex: none; }
+.acc-tab { display: inline-flex; align-items: center; gap: 7px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-2); cursor: pointer; font-weight: 700; font-size: 12.5px; user-select: none; }
+.acc-tab:hover { border-color: rgba(var(--accent-rgb), .5); }
+.acc-tab.on { border-color: var(--accent); background: linear-gradient(180deg, rgba(var(--accent-rgb), .18), rgba(var(--accent-rgb), .05)); box-shadow: var(--glow); color: #fff; }
+.acc-tab.off { opacity: .55; }
+.acc-tab .acc-ico { font-size: 11px; opacity: .8; }
+.acc-tab .acc-x { opacity: .5; font-size: 11px; margin-left: 2px; }
+.acc-tab .acc-x:hover, .acc-tab .acc-x.armed { opacity: 1; color: #ff8a8a; }
+.acc-tab.acc-add { border-style: dashed; color: var(--muted); font-weight: 600; }
+.acc-tab.acc-add input { width: 130px; }
+body.poke-focus #accounts-bar { display: none !important; }

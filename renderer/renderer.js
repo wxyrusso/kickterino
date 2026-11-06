@@ -117,50 +117,19 @@ function renderTabs() {
   // Favoritos primeiro (só na tela: a ordem da lista, usada sem o foco em bônus, não muda).
   const favs = new Set(state.favorites || []);
   const ordered = [...state.channels.filter((c) => favs.has(c.slug)), ...state.channels.filter((c) => !favs.has(c.slug))];
-  // Contas do PokeIdle viram as primeiras abas: o jogo aparece no lugar do chat. A principal só
-  // aparece depois de aberta; as outras ficam sempre (apagadas quando fechadas) e o 🎮+ cria mais.
-  const pokeAccounts = (state.pokeIdle || {}).accounts || [];
-  for (const acc of pokeAccounts) {
-    if (acc.id === 'principal' && !acc.open && pokeAccounts.length === 1) continue;
-    const t = el('div', 'tab poke-tab' + (pokeMode === acc.id ? ' active' : '') + (acc.open ? '' : ' closed'));
-    t.append(el('span', null, `🎮 ${acc.label}`));
-    if (acc.open || acc.id !== 'principal') {
-      const x = el('span', 'poke-close', '✕');
-      x.title = acc.open ? `Fechar o PokeIdle de ${acc.label} (encerra a sessão no app)`
-        : `Tirar a aba ${acc.label} (o login dela fica guardado)`;
-      x.onclick = async (e) => {
-        e.stopPropagation();
-        if (pokeMode === acc.id) pokeMode = false;
-        applyState(await (acc.open ? window.kick.closePokeIdle(acc.id) : window.kick.removePokeAccount(acc.id)));
-      };
-      t.append(x);
-    }
-    t.title = acc.open ? `PokeIdle de ${acc.label}. Clique num canal para voltar ao chat; o jogo continua rodando.`
-      : `Abrir o PokeIdle de ${acc.label}`;
-    t.onclick = () => showPoke(acc.id);
+  // O PokeIdle da conta escolhida (barra de contas) é a primeira aba: o jogo aparece no lugar do chat.
+  const me = currentAccount();
+  const myPoke = (((state.pokeIdle || {}).accounts) || []).find((a) => a.id === me) || {};
+  if (myPoke.open) {
+    const t = el('div', 'tab poke-tab' + (pokeMode ? ' active' : ''));
+    t.append(el('span', null, '🎮 PokeIdle'));
+    const x = el('span', 'poke-close', '✕');
+    x.title = 'Fechar o PokeIdle desta conta (encerra a sessão do jogo no app)';
+    x.onclick = async (e) => { e.stopPropagation(); pokeMode = false; setFocusMode(false); applyState(await window.kick.closePokeIdle(me)); };
+    t.append(x);
+    t.title = 'Jogo desta conta. Clique num canal para voltar ao chat; o jogo continua rodando.';
+    t.onclick = () => showPoke(me);
     nav.append(t);
-  }
-  if (pokeAccounts.some((a) => a.open) || pokeAccounts.length > 1) {
-    const addPoke = el('div', 'tab add poke-add', '🎮+');
-    addPoke.title = 'Abrir outra conta do PokeIdle (sessão separada, como no D2K)';
-    addPoke.onclick = () => {
-      const input = el('input');
-      input.placeholder = 'nome da conta do jogo';
-      input.maxLength = 20;
-      addPoke.replaceChildren(input);
-      input.focus();
-      const done = async (commit) => {
-        if (commit && input.value.trim()) {
-          const res = await window.kick.addPokeAccount(input.value, chatRect());
-          if (res.error) toast(res.error);
-          else { pokeMode = res.added; applyState(res); return; }
-        }
-        renderTabs();
-      };
-      input.onkeydown = (e) => { if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); };
-      input.onblur = () => done(false);
-    };
-    nav.append(addPoke);
   }
   if (pokeMode) {
     const full = el('div', 'tab poke-full', '⛶ Só o jogo');
@@ -210,7 +179,7 @@ const chatRect = () => {
   const r = $('#chat-col').getBoundingClientRect();
   return { x: r.left, y: r.top, width: r.width, height: r.height };
 };
-async function showPoke(id = 'principal') {
+async function showPoke(id = currentAccount()) {
   pokeMode = id;
   renderTabs();
   applyState(await window.kick.showPokeIdle(id, chatRect()));
@@ -239,9 +208,10 @@ function renderFocusBar() {
   const bar = $('#focus-bar');
   bar.replaceChildren();
   if (!focusMode) return;
-  for (const acc of ((state.pokeIdle || {}).accounts || []).filter((a) => a.open)) {
-    const b = el('button', 'focus-acc' + (pokeMode === acc.id ? ' on' : ''), `🎮 ${acc.label}`);
-    b.onclick = () => showPoke(acc.id);
+  // As contas, para trocar de jogo sem sair do modo: cada uma abre o PokeIdle dela.
+  for (const acc of ((state.tk || {}).accounts || [{ id: 'principal', label: 'Principal' }])) {
+    const b = el('button', 'focus-acc' + (currentAccount() === acc.id ? ' on' : ''), `🎮 ${acc.label}`);
+    b.onclick = async () => { await switchAccount(acc.id); showPoke(acc.id); };
     bar.append(b);
   }
   bar.append(el('span', 'focus-fill'));
@@ -251,6 +221,72 @@ function renderFocusBar() {
   bar.append(sair);
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'F11') { e.preventDefault(); setFocusMode(!focusMode); } });
+
+// ---------- Barra de contas ----------
+// Principal e alts lado a lado no topo. Escolher uma conta faz a janela inteira (canais, painel,
+// logins, bônus e o PokeIdle) mostrar aquela conta; todas continuam farmando ao mesmo tempo.
+const currentAccount = () => (state.tk && state.tk.active) || 'principal';
+async function switchAccount(id) {
+  if (id === currentAccount()) return;
+  const wasPoke = !!pokeMode;
+  const res = await window.kick.switchAccount(id);
+  if (res.error) { toast(res.error); return; }
+  applyState(res);
+  // O jogo na tela acompanha a conta.
+  if (wasPoke) {
+    const acc = ((res.pokeIdle || {}).accounts || []).find((a) => a.id === id) || {};
+    if (acc.open) showPoke(id); else { leavePoke(); }
+  }
+}
+function renderAccountsBar() {
+  const bar = $('#accounts-bar');
+  const tk = state.tk || { active: 'principal', accounts: [{ id: 'principal', label: 'Principal', connected: true }] };
+  bar.replaceChildren();
+  for (const acc of tk.accounts) {
+    const b = el('div', 'acc-tab' + (acc.id === tk.active ? ' on' : '') + (acc.connected ? '' : ' off'));
+    b.append(el('span', 'acc-ico', acc.id === 'principal' ? '★' : '👤'), el('span', null, acc.label));
+    b.title = acc.connected ? `Mostrar a conta ${acc.label}` : `A conta ${acc.label} está abrindo…`;
+    b.onclick = () => switchAccount(acc.id);
+    if (acc.id !== 'principal') {
+      const x = el('span', 'acc-x', '✕');
+      x.title = `Tirar a conta ${acc.label} da barra (o farm dela para; os logins ficam guardados)`;
+      x.onclick = async (e) => {
+        e.stopPropagation();
+        if (!x.classList.contains('armed')) {
+          x.classList.add('armed'); x.textContent = 'tirar?';
+          setTimeout(() => { if (x.isConnected) { x.classList.remove('armed'); x.textContent = '✕'; } }, 4000);
+          return;
+        }
+        if (currentAccount() === acc.id) leavePoke();
+        applyState(await window.kick.removeTkAccount(acc.id));
+      };
+      b.append(x);
+    }
+    bar.append(b);
+  }
+  const add = el('div', 'acc-tab acc-add', '＋ conta');
+  add.title = 'Nova conta: ela farma com a Kick e a Twitch dela e tem o PokeIdle dela';
+  add.onclick = () => {
+    const input = el('input');
+    input.placeholder = 'nome (ex.: alt-4)';
+    input.maxLength = 20;
+    add.replaceChildren(input);
+    input.focus();
+    const done = async (commit) => {
+      if (commit && input.value.trim()) {
+        toast('Abrindo a conta nova…');
+        const res = await window.kick.addTkAccount(input.value);
+        if (res.error) toast(res.error);
+        if (res.channels) applyState(res);
+        if (res.added && !res.error) toast(`Conta ${res.added} pronta: faça o Login Kick e o Login Twitch dela.`);
+      }
+      renderAccountsBar();
+    };
+    input.onkeydown = (e) => { if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); };
+    input.onblur = () => done(false);
+  };
+  bar.append(add);
+}
 window.kick.onFocusToggle(() => setFocusMode(!focusMode));
 // A área do chat muda de tamanho (janela, painel de pontos, abas em mais linhas): o jogo acompanha.
 new ResizeObserver(() => { if (pokeMode) window.kick.pokeIdleBounds(chatRect()); }).observe($('#chat-col'));
@@ -403,9 +439,15 @@ function renderPanel() {
 }
 
 function applyState(s) {
-  const prevLive = new Map(state.channels.map((c) => [c.slug, c.live]));
-  celebrate(state, s);
+  // Respostas que não trazem a barra de contas mantêm a que já estava.
+  if (!s.tk && state.tk) s = { ...s, tk: state.tk };
+  // Trocou de conta: nada de confete nem "entrou ao vivo" comparando contas diferentes.
+  const sameAccount = ((state.tk || {}).active || 'principal') === ((s.tk || {}).active || 'principal');
+  const prevLive = new Map(sameAccount ? state.channels.map((c) => [c.slug, c.live]) : []);
+  if (sameAccount) celebrate(state, s);
   state = s;
+  if (active && !state.channels.some((c) => c.slug === active)) active = null;
+  renderAccountsBar();
   for (const ch of state.channels) {
     const was = prevLive.get(ch.slug);
     if (was === false && ch.live) pushMessage(ch.slug, systemMessage(`${ch.displayName} entrou ao vivo.`));
@@ -413,7 +455,7 @@ function applyState(s) {
   }
   if (!active && state.channels.length) active = state.channels[0].slug;
   // A conta do PokeIdle na tela foi fechada (ou caiu): volta para o chat.
-  if (pokeMode && !(((state.pokeIdle || {}).accounts || []).find((a) => a.id === pokeMode) || {}).open) pokeMode = false;
+  if (pokeMode && !(((state.pokeIdle || {}).accounts || []).find((a) => a.id === pokeMode) || {}).open) { pokeMode = false; setFocusMode(false); }
   // Conta alt: o nome dela aparece na marca e no título, para não confundir as janelas.
   const appName = state.account ? `TK MultiStream · ${state.account}` : 'TK MultiStream';
   // No topo fica só o ícone; nas alts, um selinho com o nome da conta.
@@ -550,10 +592,10 @@ function renderBonusBox() {
   box.replaceChildren();
   const now = Date.now();
   const bar = el('div', 'poke-bar');
-  const open = (state.pokeIdle || {}).open;
-  const btn = el('button', 'poke-open', open ? (pokeMode === 'principal' ? '🎮 PokeIdle na tela' : '🎮 Mostrar PokeIdle') : '🎮 Abrir PokeIdle');
+  const open = (((state.pokeIdle || {}).accounts || []).find((a) => a.id === currentAccount()) || {}).open;
+  const btn = el('button', 'poke-open', open ? (pokeMode ? '🎮 PokeIdle na tela' : '🎮 Mostrar PokeIdle') : '🎮 Abrir PokeIdle');
   btn.title = 'Abre o jogo no lugar do chat, numa aba própria. Enquanto ele estiver aberto, o app lê sozinho o tempo do Bônus Twitch e do Bônus Kick. O PokeIdle só aceita uma sessão por conta: se a mesma conta estiver aberta no D2K ou no navegador, uma delas cai.';
-  btn.onclick = () => showPoke('principal');
+  btn.onclick = () => showPoke(currentAccount());
   bar.append(btn);
   // Extensões do Chrome carregadas no PokeIdle; as que têm painel próprio ganham um botão.
   const exts = state.pokeExtensions || [];
@@ -801,7 +843,7 @@ function celebrate(prev, next) {
 $('#btn-login').onclick = () => window.kick.showLogin('kick');
 $('#btn-login-twitch').onclick = () => window.kick.showLogin('twitch');
 $('#btn-twitch').onclick = () => { openModal('twitch'); renderTwitchModal(); };
-$('#btn-accounts').onclick = () => { openModal('accounts'); renderAccountsModal(); };
+// (o botão Contas virou a barra de contas no topo)
 
 // ---------- Contas (principal + alts) ----------
 // Cada conta abre numa janela própria, com logins, canais e bônus só dela.

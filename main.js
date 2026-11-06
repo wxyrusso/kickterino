@@ -9,6 +9,25 @@ const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
 const twitch = require('./twitch');
+const nodeNet = require('net');
+
+// ---------- Várias contas numa janela só ----------
+// A conta principal é o app com janela. Cada conta alt é uma cópia deste mesmo app rodando por trás
+// (--conta=NOME --headless: sem janela nem bandeja), com logins, canais, farm e bônus próprios.
+// A principal mostra a conta escolhida na barra de contas: os comandos da interface (os mesmos
+// ipcMain.handle de sempre) são repassados para a cópia daquela conta por um canal local (pipe).
+const HEADLESS = process.argv.includes('--headless');
+const HANDLERS = new Map();      // canal -> função (para atender pelo canal de controle)
+let routeHandler = null;         // definido mais abaixo: repassa para a conta alt escolhida
+const ipcHandleOriginal = ipcMain.handle.bind(ipcMain);
+ipcMain.handle = (channel, fn) => {
+  HANDLERS.set(channel, fn);
+  return ipcHandleOriginal(channel, (e, ...args) => {
+    const routed = routeHandler && routeHandler(channel, args);
+    return routed !== undefined ? routed : fn(e, ...args);
+  });
+};
+const pipeName = (id) => `\\\\.\\pipe\\tk-multistream-${id}`;
 
 // Mantém vídeos rodando mesmo com janelas ocultas/minimizadas.
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -127,6 +146,12 @@ const status = new Map();   // slug -> { live, viewers, chatroomId, title, point
 
 function send(channel, payload) {
   if (process.env.KICKTERINO_DEBUG && channel === 'chat') console.log(`CHAT ${payload.slug} ${payload.kind} ${payload.data.username || payload.data.sender.username}`);
+  // Conta alt: o que iria para a interface vai para a conta principal, que mostra se for a escolhida.
+  if (ACCOUNT) controlBroadcast({ ev: channel, payload });
+  if (HEADLESS) return;
+  // Principal com uma alt na tela: o status da principal não pode cobrir o da alt.
+  if (!ACCOUNT && activeAlt && channel === 'status') return;
+  if (channel === 'status' && !ACCOUNT) payload = { ...payload, tk: tkSnapshot() };
   if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(channel, payload);
 }
 
@@ -761,6 +786,8 @@ function attachPokeReader(wc, id) {
       for (const platform of Object.keys(found)) setPokeBonus(platform, found[platform], 'jogo');
       config.pokeReadAt = Date.now();
     } else {
+      // A conta alt roda por trás: o bônus vai para o painel dela.
+      if ((altCores.get(id) || {}).connected) proxy(id, 'poke:bonus', [found]).catch(() => {});
       const prev = (config.pokeBonusOthers || {})[id] || {};
       config.pokeBonusOthers = { ...(config.pokeBonusOthers || {}), [id]: { ...prev, ...found, readAt: Date.now() } };
     }
@@ -987,6 +1014,7 @@ const twitchKeys =() => config.channels.filter((k) => platformOf(k) === 'twitch'
 const hasTwitchApi = () => !!(config.twitchClientId && config.twitchClientSecret);
 
 function syncTwitchChat() {
+  if (HEADLESS) return; // o chat da Twitch é da janela principal (os canais são os mesmos)
   twitchChat.setChannels(twitchKeys().map(nameOf));
 }
 
@@ -1593,6 +1621,7 @@ function setOpenAtLogin(on) {
 }
 
 function showMain() {
+  if (HEADLESS) { controlBroadcast({ ev: 'show-me' }); return; } // a principal mostra esta conta
   // Abrir o atalho enquanto o app ainda está fechando chama isto com a janela já destruída.
   if (!mainWin || mainWin.isDestroyed() || app.isQuitting) return;
   if (mainWin.isMinimized()) mainWin.restore();
@@ -1719,7 +1748,236 @@ ipcMain.handle('accounts:create', async (_e, { name, shortcut } = {}) => {
   return { ok: true, name: n, shortcut: made, accounts: listAccounts() };
 });
 
-ipcMain.handle('state:get', () => snapshot());
+// ---------- Canal de controle da conta alt (lado da cópia que roda por trás) ----------
+// A principal se conecta pelo pipe e chama os mesmos comandos da interface; o que a alt mandaria
+// para a interface (status, avisos) vai pelo mesmo pipe.
+const controlClients = new Set();
+function controlBroadcast(obj) {
+  if (!controlClients.size) return;
+  let line;
+  try { line = JSON.stringify(obj) + '\n'; } catch { return; }
+  for (const s of controlClients) { try { s.write(line); } catch {} }
+}
+function startControlServer() {
+  const srv = nodeNet.createServer((sock) => {
+    controlClients.add(sock);
+    sock.setEncoding('utf8');
+    let buf = '';
+    sock.on('data', (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        let m;
+        try { m = JSON.parse(line); } catch { continue; }
+        handleControl(sock, m);
+      }
+    });
+    sock.on('close', () => controlClients.delete(sock));
+    sock.on('error', () => controlClients.delete(sock));
+  });
+  srv.on('error', () => {});
+  srv.listen(pipeName(ACCOUNT));
+}
+async function handleControl(sock, m) {
+  const fn = HANDLERS.get(m.ch);
+  let reply;
+  try {
+    const value = fn ? await fn({ sender: null, fromControl: true }, ...(m.args || [])) : undefined;
+    reply = { id: m.id, ok: true, value: value === undefined ? null : value };
+  } catch (e) {
+    reply = { id: m.id, ok: false, error: String((e && e.message) || e) };
+  }
+  try { sock.write(JSON.stringify(reply) + '\n'); } catch {}
+}
+// Bônus lidos do PokeIdle desta conta (o jogo roda na janela da principal).
+ipcMain.handle('poke:bonus', (_e, found) => {
+  for (const platform of Object.keys(found || {})) setPokeBonus(platform, found[platform], 'jogo');
+  config.pokeReadAt = Date.now();
+  saveConfig(); configDirty = false;
+  send('status', snapshot());
+  return true;
+});
+
+// ---------- Contas alt (lado da principal) ----------
+const altCores = new Map(); // id -> { id, sock, connected, pending, seq, proc, retry }
+let activeAlt = null;       // conta alt na tela (null = principal)
+// Comandos que são sempre da principal (o PokeIdle e as contas moram na janela dela).
+const LOCAL_CHANNELS = new Set([
+  'tk:switch', 'tk:add', 'tk:remove', 'pokeidle:show', 'pokeidle:hide', 'pokeidle:close', 'pokeidle:add',
+  'pokeidle:remove', 'cockpit:open', 'report:save', 'accounts:list', 'accounts:open', 'accounts:create', 'app:quit',
+]);
+
+function tkSnapshot() {
+  return {
+    active: activeAlt || POKE_MAIN,
+    accounts: pokeAccountIds().map((id) => ({
+      id, label: pokeLabel(id),
+      connected: id === POKE_MAIN || !!(altCores.get(id) || {}).connected,
+    })),
+  };
+}
+
+// O status de uma alt chega sem as partes que moram na principal: completa.
+function decorateState(s) {
+  return {
+    ...s,
+    pokeIdle: pokeIdleSnapshot(),
+    pokeExtensions: loadedPokeExtensions.map((e) => ({ id: e.id, name: e.name, version: e.version, cockpit: !!e.cockpit })),
+    tk: tkSnapshot(),
+  };
+}
+const decorateIfState = (v) => (v && typeof v === 'object' && Array.isArray(v.channels) ? decorateState(v) : v);
+
+function spawnCore(id) {
+  const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+  const env = { ...process.env };
+  delete env.KICKTERINO_DATA;
+  const { spawn } = require('child_process');
+  try {
+    return spawn(exe, [...accountArgs(id), '--headless'], { detached: true, stdio: 'ignore', env, windowsHide: true });
+  } catch { return null; }
+}
+
+function connectCore(id) {
+  let core = altCores.get(id);
+  if (!core) {
+    core = { id, sock: null, connected: false, pending: new Map(), seq: 0, proc: null, tries: 0 };
+    altCores.set(id, core);
+  }
+  if (core.connected || core.connecting) return core;
+  core.connecting = true;
+  const sock = nodeNet.connect(pipeName(id));
+  sock.setEncoding('utf8');
+  let buf = '';
+  sock.on('connect', () => {
+    core.connecting = false;
+    core.connected = true;
+    core.sock = sock;
+    core.tries = 0;
+    send('status', snapshot()); // a barra de contas mostra a alt pronta
+    if (activeAlt === id) proxy(id, 'state:get', []).then((s) => pushAltStatus(id, s)).catch(() => {});
+  });
+  sock.on('data', (d) => {
+    buf += d;
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      let m;
+      try { m = JSON.parse(line); } catch { continue; }
+      if (m.id != null && core.pending.has(m.id)) {
+        const p = core.pending.get(m.id);
+        core.pending.delete(m.id);
+        if (m.ok) p.resolve(m.value); else p.reject(new Error(m.error));
+      } else if (m.ev) onAltEvent(id, m.ev, m.payload);
+    }
+  });
+  const lost = () => {
+    const was = core.connected;
+    core.connecting = false;
+    core.connected = false;
+    core.sock = null;
+    for (const p of core.pending.values()) p.reject(new Error('conta desconectada'));
+    core.pending.clear();
+    if (was) send('status', snapshot());
+    if (!altCores.has(id) || app.isQuitting) return;
+    // A cópia ainda está abrindo (ou caiu): tenta de novo; depois de um tempo, abre outra.
+    core.tries++;
+    if (core.tries === 15) core.proc = spawnCore(id);
+    setTimeout(() => { if (altCores.has(id)) connectCore(id); }, core.tries < 30 ? 2000 : 15000);
+  };
+  sock.on('error', lost);
+  sock.on('close', () => { if (core.connected) lost(); });
+  return core;
+}
+
+function startCore(id) {
+  const core = connectCore(id);
+  if (!core.proc) core.proc = spawnCore(id); // se já estiver rodando, a cópia nova sai sozinha (trava da pasta)
+  return core;
+}
+
+function proxy(id, ch, args) {
+  const core = altCores.get(id);
+  if (!core || !core.connected || !core.sock) return Promise.reject(new Error('A conta ainda está abrindo, tente de novo em alguns segundos.'));
+  const reqId = ++core.seq;
+  return new Promise((resolve, reject) => {
+    core.pending.set(reqId, { resolve, reject });
+    try { core.sock.write(JSON.stringify({ id: reqId, ch, args }) + '\n'); } catch (e) { core.pending.delete(reqId); reject(e); }
+    setTimeout(() => { if (core.pending.has(reqId)) { core.pending.delete(reqId); reject(new Error('A conta não respondeu.')); } }, 60 * 1000);
+  });
+}
+
+function pushAltStatus(id, payload) {
+  if (activeAlt !== id || !payload || !mainWin || mainWin.isDestroyed()) return;
+  mainWin.webContents.send('status', decorateState(payload));
+}
+
+function onAltEvent(id, ev, payload) {
+  if (ev === 'status') return pushAltStatus(id, payload);
+  if (ev === 'toast') { if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('toast', `[${id}] ${payload}`); return; }
+  if (ev === 'show-me') { switchAccount(id).then(() => showMain()).catch(() => {}); return; }
+  if (ev === 'select' && activeAlt === id && mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('select', payload);
+}
+
+async function waitConnected(id, ms = 25 * 1000) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    const core = altCores.get(id);
+    if (core && core.connected) return true;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return false;
+}
+
+async function switchAccount(id) {
+  if (!id || id === POKE_MAIN) { activeAlt = null; return snapshotForUi(); }
+  if (!pokeAccountIds().includes(id)) return snapshotForUi();
+  startCore(id);
+  if (!(await waitConnected(id))) return { ...snapshotForUi(), error: `A conta ${id} ainda está abrindo. Tente de novo em alguns segundos.` };
+  activeAlt = id;
+  return decorateState(await proxy(id, 'state:get', []));
+}
+const snapshotForUi = () => ({ ...snapshot(), tk: tkSnapshot() });
+
+routeHandler = (channel, args) => {
+  if (ACCOUNT || !activeAlt || LOCAL_CHANNELS.has(channel)) return undefined;
+  return proxy(activeAlt, channel, args).then(decorateIfState);
+};
+
+ipcMain.handle('tk:switch', (_e, id) => switchAccount(id));
+ipcMain.handle('tk:add', async (_e, name) => {
+  const id = String(name || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '').slice(0, 20);
+  if (!id || id === POKE_MAIN) return { ...snapshotForUi(), error: 'Use só letras, números, - ou _ (até 20).' };
+  if (!pokeAccountIds().includes(id)) { config.pokeAccounts = [...(config.pokeAccounts || []), id]; saveConfig(); }
+  const res = await switchAccount(id);
+  return { ...res, added: id };
+});
+// Tirar uma conta da barra: a cópia dela fecha; logins e dados ficam guardados no PC.
+ipcMain.handle('tk:remove', async (_e, id) => {
+  if (!id || id === POKE_MAIN) return snapshotForUi();
+  if (activeAlt === id) activeAlt = null;
+  closePokeIdle(id);
+  const core = altCores.get(id);
+  altCores.delete(id);
+  if (core && core.connected) {
+    try { core.sock.write(JSON.stringify({ id: 0, ch: 'app:quit', args: [] }) + '\n'); } catch {}
+    try { core.sock.end(); } catch {}
+  }
+  config.pokeAccounts = (config.pokeAccounts || []).filter((x) => x !== id);
+  saveConfig();
+  return snapshotForUi();
+});
+
+function quitAltCores() {
+  for (const core of altCores.values()) {
+    if (core.sock) { try { core.sock.write(JSON.stringify({ id: 0, ch: 'app:quit', args: [] }) + '\n'); } catch {} }
+  }
+}
+
+ipcMain.handle('state:get', () => (ACCOUNT ? snapshot() : snapshotForUi()));
 // Aceita "canal" ou kick.com/canal (Kick) e "twitch:canal" ou twitch.tv/canal (Twitch).
 function parseChannelInput(input) {
   const raw = String(input || '').trim().toLowerCase();
@@ -1923,7 +2181,7 @@ ipcMain.handle('twitch:disconnectChat', async () => {
 // Sair da conta: apaga cookies, cache e tudo que as páginas guardaram, inclusive o login do
 // Google, Apple ou Discord. A lista de canais e as preferências ficam.
 ipcMain.handle('logout', async () => {
-  const { response } = await dialog.showMessageBox(mainWin, {
+  const { response } = await (HEADLESS ? dialog.showMessageBox : (o) => dialog.showMessageBox(mainWin, o))({
     type: 'question', buttons: ['Sair da Kick', 'Sair da Twitch', 'Cancelar'], defaultId: 2, cancelId: 2,
     title: 'Sair da conta', message: 'De qual conta você quer sair neste PC?',
     detail: 'Os dados de login salvos no app para essa plataforma serão apagados. Para farmar de novo, será preciso entrar outra vez.',
@@ -1970,7 +2228,8 @@ ipcMain.handle('chat:send', async (_e, { chatroomId, content }) => {
 
 // Só uma instância: abrir o atalho de novo traz a janela existente para frente.
 if (!app.requestSingleInstanceLock()) app.quit();
-app.on('second-instance', showMain);
+// Abrir de novo traz a janela; a principal religando uma alt que já roda por trás não mostra nada.
+app.on('second-instance', (_e, argv) => { if (HEADLESS && (argv || []).includes('--headless')) return; showMain(); });
 // Identificador próprio: a barra de tarefas usa o ícone do TK MultiStream, não o do Kickterino instalado.
 app.setAppUserModelId(ACCOUNT ? `com.streamterino.app.${ACCOUNT}` : 'com.streamterino.app');
 
@@ -1980,13 +2239,13 @@ app.whenReady().then(() => {
   loadPokeExtensions();
   mainWin = new BrowserWindow({
     width: 1100, height: 760, backgroundColor: '#1a1a1a', title: APP_TITLE,
-    show: !process.argv.includes('--hidden'), // ao iniciar com o Windows, abre direto na bandeja
+    show: !process.argv.includes('--hidden') && !HEADLESS, // ao iniciar com o Windows, abre direto na bandeja
     icon: path.join(__dirname, 'build', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
   mainWin.setMenuBarVisibility(false);
   // Sem isto o Windows mostra na barra de tarefas (e ao fixar) o ícone do electron.exe, um átomo.
-  if (process.platform === 'win32') {
+  if (process.platform === 'win32' && !HEADLESS) {
     const ico = path.join(__dirname, 'build', 'terino-atomo.ico');
     const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
     mainWin.setAppDetails({
@@ -1998,7 +2257,9 @@ app.whenReady().then(() => {
       relaunchDisplayName: APP_TITLE,
     });
   }
-  mainWin.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // Conta alt por trás: sem interface (quem mostra é a janela da principal).
+  if (!HEADLESS) mainWin.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  if (ACCOUNT) startControlServer();
   // Fechar a janela não para o farm: o app continua na bandeja, perto do relógio.
   mainWin.on('close', (e) => {
     if (app.isQuitting) return;
@@ -2016,8 +2277,10 @@ app.whenReady().then(() => {
   mainWin.on('query-session-end', () => { app.isQuitting = true; });
   mainWin.on('session-end', () => { app.isQuitting = true; });
 
-  createTray();
+  if (!HEADLESS) createTray();
   syncKeepAwake();
+  // Principal: liga as contas alt (cada uma roda por trás e farma com os logins dela).
+  if (!ACCOUNT) for (const id of pokeAccountIds()) if (id !== POKE_MAIN) startCore(id);
   powerMonitor.on('resume', recoverAfterResume);
   setupAutoUpdate();
   createApiWindow();
@@ -2037,5 +2300,5 @@ app.whenReady().then(() => {
   setInterval(syncPartners, 6 * 60 * 60 * 1000);
 });
 
-app.on('before-quit', () => { app.isQuitting = true; twitchChat.close(); });
+app.on('before-quit', () => { app.isQuitting = true; twitchChat.close(); if (!ACCOUNT) quitAltCores(); });
 app.on('window-all-closed', () => app.quit());
