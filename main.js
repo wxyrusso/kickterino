@@ -13,10 +13,10 @@ const nodeNet = require('net');
 
 // ---------- Várias contas numa janela só ----------
 // A conta principal é o app com janela. Cada conta alt é uma cópia deste mesmo app rodando por trás
-// (--conta=NOME --headless: sem janela nem bandeja), com logins, canais, farm e bônus próprios.
+// (--conta=NOME --tk-fundo: sem janela nem bandeja), com logins, canais, farm e bônus próprios.
 // A principal mostra a conta escolhida na barra de contas: os comandos da interface (os mesmos
 // ipcMain.handle de sempre) são repassados para a cópia daquela conta por um canal local (pipe).
-const HEADLESS = process.argv.includes('--headless');
+const HEADLESS = process.argv.includes('--tk-fundo');
 const HANDLERS = new Map();      // canal -> função (para atender pelo canal de controle)
 let routeHandler = null;         // definido mais abaixo: repassa para a conta alt escolhida
 const ipcHandleOriginal = ipcMain.handle.bind(ipcMain);
@@ -1836,7 +1836,7 @@ function spawnCore(id) {
   delete env.KICKTERINO_DATA;
   const { spawn } = require('child_process');
   try {
-    return spawn(exe, [...accountArgs(id), '--headless'], { detached: true, stdio: 'ignore', env, windowsHide: true });
+    return spawn(exe, [...accountArgs(id), '--tk-fundo'], { detached: true, stdio: 'ignore', env, windowsHide: true });
   } catch { return null; }
 }
 
@@ -2229,7 +2229,7 @@ ipcMain.handle('chat:send', async (_e, { chatroomId, content }) => {
 // Só uma instância: abrir o atalho de novo traz a janela existente para frente.
 if (!app.requestSingleInstanceLock()) app.quit();
 // Abrir de novo traz a janela; a principal religando uma alt que já roda por trás não mostra nada.
-app.on('second-instance', (_e, argv) => { if (HEADLESS && (argv || []).includes('--headless')) return; showMain(); });
+app.on('second-instance', (_e, argv) => { if (HEADLESS && (argv || []).includes('--tk-fundo')) return; showMain(); });
 // Identificador próprio: a barra de tarefas usa o ícone do TK MultiStream, não o do Kickterino instalado.
 app.setAppUserModelId(ACCOUNT ? `com.streamterino.app.${ACCOUNT}` : 'com.streamterino.app');
 
