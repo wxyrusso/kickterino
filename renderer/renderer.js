@@ -162,6 +162,13 @@ function renderTabs() {
     };
     nav.append(addPoke);
   }
+  if (pokeMode) {
+    const full = el('div', 'tab poke-full', '⛶ Só o jogo');
+    full.title = 'Esconde o topo, as abas e o painel: o PokeIdle ocupa a janela (F11)';
+    full.onclick = () => setFocusMode(true);
+    nav.append(full);
+  }
+  if (focusMode) renderFocusBar();
   for (const ch of ordered) {
     const queued = ch.live && !ch.watching;
     const t = el('div', 'tab' + (ch.live ? ' live' : '') + (queued ? ' queued' : '') + (ch.ageGate ? ' age' : '') + (ch.slug === active && !pokeMode ? ' active' : '') + (ch.watching ? ' watching' : ''));
@@ -210,9 +217,41 @@ async function showPoke(id = 'principal') {
 }
 function leavePoke() {
   if (!pokeMode) return;
+  setFocusMode(false);
   pokeMode = false;
   window.kick.hidePokeIdle();
 }
+
+// ---------- Modo só o jogo ----------
+// Esconde o topo, as abas dos canais e o painel: o PokeIdle ocupa a janela. O farm continua.
+// Fica uma faixa fina com as contas do jogo e o botão de voltar; F11 liga e desliga.
+let focusMode = false;
+function setFocusMode(on) {
+  on = !!on && !!pokeMode;
+  if (on === focusMode) return;
+  focusMode = on;
+  document.body.classList.toggle('poke-focus', on);
+  $('#focus-bar').hidden = !on;
+  renderFocusBar();
+  requestAnimationFrame(() => { if (pokeMode) window.kick.pokeIdleBounds(chatRect()); });
+}
+function renderFocusBar() {
+  const bar = $('#focus-bar');
+  bar.replaceChildren();
+  if (!focusMode) return;
+  for (const acc of ((state.pokeIdle || {}).accounts || []).filter((a) => a.open)) {
+    const b = el('button', 'focus-acc' + (pokeMode === acc.id ? ' on' : ''), `🎮 ${acc.label}`);
+    b.onclick = () => showPoke(acc.id);
+    bar.append(b);
+  }
+  bar.append(el('span', 'focus-fill'));
+  const sair = el('button', 'focus-exit', '⤢ Mostrar tudo (F11)');
+  sair.title = 'Volta a mostrar o topo, as abas e o painel';
+  sair.onclick = () => setFocusMode(false);
+  bar.append(sair);
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'F11') { e.preventDefault(); setFocusMode(!focusMode); } });
+window.kick.onFocusToggle(() => setFocusMode(!focusMode));
 // A área do chat muda de tamanho (janela, painel de pontos, abas em mais linhas): o jogo acompanha.
 new ResizeObserver(() => { if (pokeMode) window.kick.pokeIdleBounds(chatRect()); }).observe($('#chat-col'));
 new ResizeObserver(() => { if (pokeMode) window.kick.pokeIdleBounds(chatRect()); }).observe($('#tabs'));

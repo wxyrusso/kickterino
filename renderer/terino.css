@@ -88,3 +88,12 @@ button:hover { border-color: var(--accent); }
 .tab.poke-tab.closed { opacity: .55; border-style: dashed; }
 .tab.poke-add { color: #ffd27a; border-color: rgba(245, 165, 36, .5); }
 .tab.poke-add input { width: 150px; }
+
+/* Modo só o jogo */
+body.poke-focus #toolbar, body.poke-focus #tabs, body.poke-focus #panel, body.poke-focus #splitter { display: none !important; }
+#focus-bar { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px; background: var(--bg-2); border-bottom: 1px solid var(--border); flex: none; }
+#focus-bar[hidden] { display: none; }
+#focus-bar button { height: 22px; padding: 0 10px; font-size: 12px; border-radius: 999px; }
+#focus-bar .focus-acc.on { border-color: #f5a524; color: #ffd27a; }
+#focus-bar .focus-fill { flex: 1; }
+.tab.poke-full { color: var(--accent); border-color: rgba(var(--accent-rgb), .45); }

@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('kick', {
   twitchConnectChat: () => ipcRenderer.invoke('twitch:connectChat'),
   twitchDisconnectChat: () => ipcRenderer.invoke('twitch:disconnectChat'),
   onToast: (cb) => ipcRenderer.on('toast', (_e, text) => cb(text)),
+  onFocusToggle: (cb) => ipcRenderer.on('focus-toggle', () => cb()),
   logout: () => ipcRenderer.invoke('logout'),
   showChannel: (slug) => ipcRenderer.invoke('channel:show', slug),
   sendChat: (chatroomId, content) => ipcRenderer.invoke('chat:send', { chatroomId, content }),

@@ -794,6 +794,8 @@ async function ensurePokeView(id) {
   // Na área do app o Market espremia os cartões para caber na altura: o nome e o botão Comprar
   // ficavam cortados embaixo. Os cartões ficam com a altura deles e a grade rola.
   view.webContents.on('dom-ready', () => { view.webContents.insertCSS(POKEIDLE_FIX_CSS).catch(() => {}); });
+  // F11 com o jogo em foco: liga/desliga o modo só o jogo (a tecla iria para o jogo).
+  view.webContents.on('before-input-event', (e, input) => { if (input.type === 'keyDown' && input.key === 'F11') { e.preventDefault(); send('focus-toggle'); } });
   view.webContents.loadURL(POKEIDLE_URL);
   view.setVisible(false);
   pokeViews.set(id, view);
