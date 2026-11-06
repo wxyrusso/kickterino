@@ -147,3 +147,6 @@ body.poke-focus #accounts-bar { display: none !important; }
 #splitter:has(+ #panel[hidden]) { flex-basis: 24px; }
 #splitter { flex-basis: 24px; }
 #panel[hidden] { display: none !important; }
+
+/* Botão de recolher a lista de canais */
+.tab.tabs-toggle { color: var(--accent); border-color: rgba(var(--accent-rgb), .45); font-weight: 700; }

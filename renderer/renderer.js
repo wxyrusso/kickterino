@@ -139,6 +139,26 @@ function renderTabs() {
     nav.append(gridButton('tab poke-grid'));
   }
   if (focusMode) renderFocusBar();
+  // Lista de canais recolhível: fica uma linha só (o jogo/chat ganha altura).
+  const toggle = el('div', 'tab tabs-toggle', tabsCollapsed ? `▾ Canais (${ordered.length})` : '▴');
+  const watching = ordered.filter((c) => c.watching).length;
+  toggle.title = tabsCollapsed ? `Mostrar os canais (${watching} assistindo agora)` : 'Recolher a lista de canais';
+  toggle.onclick = () => {
+    tabsCollapsed = !tabsCollapsed;
+    try { localStorage.setItem('tabsCollapsed', tabsCollapsed ? '1' : '0'); } catch {}
+    renderTabs();
+  };
+  nav.append(toggle);
+  if (tabsCollapsed) {
+    // Recolhida: só o canal aberto no chat (se não for o jogo na tela), para saber onde está.
+    const cur = !pokeMode && ordered.find((c) => c.slug === active);
+    if (cur) {
+      const t = el('div', 'tab active' + (cur.watching ? ' watching' : ''));
+      t.append(platIcon(cur.platform === 'twitch' ? 'twitch' : 'kick'), el('span', null, cur.displayName));
+      nav.append(t);
+    }
+    return;
+  }
   for (const ch of ordered) {
     const queued = ch.live && !ch.watching;
     const t = el('div', 'tab' + (ch.live ? ' live' : '') + (queued ? ' queued' : '') + (ch.ageGate ? ' age' : '') + (ch.slug === active && !pokeMode ? ' active' : '') + (ch.watching ? ' watching' : ''));
@@ -173,6 +193,9 @@ function renderTabs() {
   };
   nav.append(add);
 }
+
+let tabsCollapsed = false;
+try { tabsCollapsed = localStorage.getItem('tabsCollapsed') === '1'; } catch {}
 
 // ---------- PokeIdle no lugar do chat ----------
 let pokeMode = false;
