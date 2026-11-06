@@ -136,6 +136,7 @@ function renderTabs() {
     full.title = 'Esconde o topo, as abas e o painel: o PokeIdle ocupa a janela (F11)';
     full.onclick = () => setFocusMode(true);
     nav.append(full);
+    nav.append(gridButton('tab poke-grid'));
   }
   if (focusMode) renderFocusBar();
   for (const ch of ordered) {
@@ -191,6 +192,18 @@ function leavePoke() {
   window.kick.hidePokeIdle();
 }
 
+// ---------- Grade: todos os PokeIdle lado a lado ----------
+function gridButton(cls) {
+  const on = !!(state.pokeIdle || {}).grid;
+  const b = el(cls.startsWith('tab') ? 'div' : 'button', cls + (on ? ' on' : ''), on ? '▣ Um por vez' : '▦ Grade');
+  b.title = on ? 'Volta a mostrar só o PokeIdle da conta escolhida' : 'Mostra o PokeIdle de todas as contas lado a lado (abre os que faltam)';
+  b.onclick = async () => {
+    if (!on) toast('Abrindo o PokeIdle de todas as contas na grade…');
+    applyState(await window.kick.pokeGrid(!on, currentAccount(), chatRect()));
+  };
+  return b;
+}
+
 // ---------- Modo só o jogo ----------
 // Esconde o topo, as abas dos canais e o painel: o PokeIdle ocupa a janela. O farm continua.
 // Fica uma faixa fina com as contas do jogo e o botão de voltar; F11 liga e desliga.
@@ -214,6 +227,7 @@ function renderFocusBar() {
     b.onclick = async () => { await switchAccount(acc.id); showPoke(acc.id); };
     bar.append(b);
   }
+  bar.append(gridButton('focus-grid'));
   bar.append(el('span', 'focus-fill'));
   const sair = el('button', 'focus-exit', '⤢ Mostrar tudo (F11)');
   sair.title = 'Volta a mostrar o topo, as abas e o painel';
@@ -286,6 +300,16 @@ function renderAccountsBar() {
     input.onblur = () => done(false);
   };
   bar.append(add);
+  const all = el('div', 'acc-tab acc-all', '🎮 Abrir todos');
+  all.title = 'Abre o PokeIdle de todas as contas de uma vez (cada um gasta uns 600 MB) e mostra o da conta escolhida';
+  all.onclick = async () => {
+    toast('Abrindo o PokeIdle de todas as contas…');
+    const id = currentAccount();
+    pokeMode = id;
+    renderTabs();
+    applyState(await window.kick.openAllPoke(id, chatRect()));
+  };
+  bar.append(all);
 }
 window.kick.onFocusToggle(() => setFocusMode(!focusMode));
 // A área do chat muda de tamanho (janela, painel de pontos, abas em mais linhas): o jogo acompanha.
@@ -642,7 +666,13 @@ function renderBonusBox() {
 }
 
 let bonusEditOpen = false;
-const BONUS_ROWS = [['XP', '⚡'], ['Capture Boost', '🎯'], ['Secret Lure', '✨']];
+const BONUS_ROWS = [['XP', '⚡', 'XP'], ['Capture', '🎯', 'Capture Boost'], ['Lure', '✨', 'Secret Lure']];
+// Tempo curto para caber na tabela com várias contas: 2d23h, 8h58, 47m.
+const mclock = (ms) => {
+  const m = Math.max(0, Math.ceil(ms / 60000));
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60;
+  return d ? `${d}d${h}h` : h ? `${h}h${String(mm).padStart(2, '0')}` : `${mm}m`;
+};
 function bonusMatrix(now) {
   const accounts = ((state.tk || {}).accounts) || [{ id: 'principal', label: 'Principal', bonus: { twitch: (state.twitchBonuses || []).map((b) => b.endsAt), kick: (state.bonuses || []).map((b) => b.endsAt) } }];
   const t = el('table', 'bonus-matrix');
@@ -661,14 +691,15 @@ function bonusMatrix(now) {
     const td = el('td'); td.colSpan = accounts.length + 1;
     td.append(platIcon(platform), el('b', null, platform === 'twitch' ? 'Twitch' : 'Kick'));
     sec.append(td); body.append(sec);
-    BONUS_ROWS.forEach(([name, ico], i) => {
+    BONUS_ROWS.forEach(([name, ico, full], i) => {
       const tr = el('tr');
-      tr.append(el('td', 'bm-name', `${ico} ${name}`));
+      const nm = el('td', 'bm-name', `${ico} ${name}`); nm.title = full;
+      tr.append(nm);
       for (const a of accounts) {
         const end = a.bonus && a.bonus[platform] ? a.bonus[platform][i] : null;
         const on = end && end > now;
-        const cell = el('td', `bm-cell ${platform}` + (on ? ' on' : '') + (a.id === currentAccount() ? ' cur' : ''), on ? dclock(end - now) : (a.bonus ? '—' : '…'));
-        cell.title = on ? `${a.label}: ${name} (${platform === 'twitch' ? 'Twitch' : 'Kick'}) acaba às ${timeStr(new Date(end))}` : (a.bonus ? `${a.label}: sem ${name} ativo` : `${a.label}: ainda carregando`);
+        const cell = el('td', `bm-cell ${platform}` + (on ? ' on' : '') + (a.id === currentAccount() ? ' cur' : ''), on ? mclock(end - now) : (a.bonus ? '—' : '…'));
+        cell.title = on ? `${a.label}: ${full} (${platform === 'twitch' ? 'Twitch' : 'Kick'}) — falta ${dclock(end - now)}, acaba às ${timeStr(new Date(end))}` : (a.bonus ? `${a.label}: sem ${full} ativo` : `${a.label}: ainda carregando`);
         cell.onclick = () => switchAccount(a.id);
         tr.append(cell);
       }
@@ -1053,4 +1084,5 @@ function renderTwitchModal() {
   $('#modal-card').replaceChildren(wrap);
 }
 
-window.kick.getState().then((s) => { applyState(s); if (active) select(active); });
+// Carga inicial: escolhe o primeiro canal, mas sem tirar ninguém do PokeIdle se ele já estiver na tela.
+window.kick.getState().then((s) => { applyState(s); if (active && !pokeMode) select(active); });

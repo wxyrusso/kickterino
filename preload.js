@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('kick', {
   setBonus: (platform, tipo, msLeft) => ipcRenderer.invoke('bonus:set', platform, tipo, msLeft),
   showPokeIdle: (id, bounds) => ipcRenderer.invoke('pokeidle:show', id, bounds),
   hidePokeIdle: () => ipcRenderer.invoke('pokeidle:hide'),
+  openAllPoke: (current, bounds) => ipcRenderer.invoke('pokeidle:openAll', current, bounds),
+  pokeGrid: (on, current, bounds) => ipcRenderer.invoke('pokeidle:grid', on, current, bounds),
   closePokeIdle: (id) => ipcRenderer.invoke('pokeidle:close', id),
   addPokeAccount: (name, bounds) => ipcRenderer.invoke('pokeidle:add', name, bounds),
   removePokeAccount: (id) => ipcRenderer.invoke('pokeidle:remove', id),

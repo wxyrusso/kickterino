@@ -3,7 +3,7 @@
 // uma janela oculta "api" em kick.com para consultar status/pontos, e uma janela
 // oculta e muda por canal AO VIVO tocando o player real — é isso que conta como "assistindo".
 const {
-  app, BrowserWindow, dialog, ipcMain, session, Tray, Menu, Notification, nativeImage, powerSaveBlocker, powerMonitor, net, webContents, WebContentsView,
+  app, BrowserWindow, dialog, ipcMain, session, shell, Tray, Menu, Notification, nativeImage, powerSaveBlocker, powerMonitor, net, webContents, WebContentsView,
 } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
@@ -228,11 +228,20 @@ app.on('web-contents-created', (_e, wc) => {
   // O pop-up de login usa a mesma sessão da página que o abriu (Kick, Twitch ou a conta do PokeIdle).
   const sameSession = () => [TWITCH_PARTITION, ...pokeAccountIds().map(pokePartition)]
     .find((p) => wc.session === session.fromPartition(p)) || PARTITION;
-  wc.setWindowOpenHandler(({ url }) => (isTrustedUrl(url) ? {
-    action: 'allow',
-    overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: { partition: sameSession() } },
-  } : { action: 'deny' }));
-  const guard = (details) => { if (details.isMainFrame && !isTrustedUrl(details.url)) details.preventDefault(); };
+  // Links de fora abertos pelo PokeIdle (votar no TopIdle, Discord, tutoriais) vão para o navegador
+  // da pessoa: dentro do app eles seriam bloqueados (a sessão do app só abre sites confiáveis).
+  const fromPokeIdle = () => pokeAccountIds().some((id) => wc.session === session.fromPartition(pokePartition(id)));
+  const openOutside = (url) => { if (/^https?:\/\//i.test(url) && fromPokeIdle()) shell.openExternal(url).catch(() => {}); };
+  wc.setWindowOpenHandler(({ url }) => {
+    if (isTrustedUrl(url)) {
+      return { action: 'allow', overrideBrowserWindowOptions: { width: 520, height: 720, autoHideMenuBar: true, webPreferences: { partition: sameSession() } } };
+    }
+    openOutside(url);
+    return { action: 'deny' };
+  });
+  const guard = (details) => {
+    if (details.isMainFrame && !isTrustedUrl(details.url)) { details.preventDefault(); openOutside(details.url); }
+  };
   wc.on('will-navigate', guard);
   wc.on('will-redirect', guard);
 });
@@ -832,16 +841,37 @@ async function ensurePokeView(id) {
   return view;
 }
 
+// Modo grade: os PokeIdle de todas as contas abertas lado a lado (2x2 com 4 contas), cada um com
+// zoom reduzido para caber. Fora dele, só o da conta escolhida, em tamanho normal.
+let pokeGrid = false;
+const POKE_FULL_WIDTH = 1400; // largura em que o jogo fica confortável sem zoom
 function applyPokeBounds() {
-  if (!pokeActive || !pokeIsOpen(pokeActive) || !pokeBounds) return;
+  if (!pokeActive || !pokeBounds) return;
   const r = pokeBounds;
-  pokeViews.get(pokeActive).setBounds({ x: Math.round(r.x), y: Math.round(r.y), width: Math.max(1, Math.round(r.width)), height: Math.max(1, Math.round(r.height)) });
+  const box = (x, y, w, h) => ({ x: Math.round(x), y: Math.round(y), width: Math.max(1, Math.round(w)), height: Math.max(1, Math.round(h)) });
+  if (!pokeGrid) {
+    if (!pokeIsOpen(pokeActive)) return;
+    const v = pokeViews.get(pokeActive);
+    v.setBounds(box(r.x, r.y, r.width, r.height));
+    v.webContents.setZoomFactor(1);
+    return;
+  }
+  const ids = pokeAccountIds().filter(pokeIsOpen);
+  const cols = Math.ceil(Math.sqrt(ids.length)), rows = Math.ceil(ids.length / cols);
+  const gap = 4, w = (r.width - gap * (cols - 1)) / cols, h = (r.height - gap * (rows - 1)) / rows;
+  const zoom = Math.max(0.35, Math.min(1, w / POKE_FULL_WIDTH));
+  ids.forEach((id, i) => {
+    const v = pokeViews.get(id);
+    v.setBounds(box(r.x + (i % cols) * (w + gap), r.y + Math.floor(i / cols) * (h + gap), w, h));
+    v.webContents.setZoomFactor(zoom);
+    v.setVisible(true);
+  });
 }
 
 async function showPokeIdle(id = POKE_MAIN, bounds) {
   if (!pokeAccountIds().includes(id)) return;
   if (bounds) pokeBounds = bounds;
-  for (const [other, v] of pokeViews) if (other !== id && !v.webContents.isDestroyed()) v.setVisible(false);
+  if (!pokeGrid) for (const [other, v] of pokeViews) if (other !== id && !v.webContents.isDestroyed()) v.setVisible(false);
   const view = await ensurePokeView(id);
   pokeActive = id;
   applyPokeBounds();
@@ -858,6 +888,8 @@ function closePokeIdle(id = POKE_MAIN) {
   const view = pokeViews.get(id);
   pokeViews.delete(id);
   if (pokeActive === id) pokeActive = null;
+  // Na grade, as contas que sobraram ocupam o espaço da que fechou.
+  if (pokeGrid && pokeActive) setImmediate(applyPokeBounds);
   if (view) {
     try { mainWin.contentView.removeChildView(view); } catch {}
     try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch {}
@@ -868,7 +900,7 @@ function closePokeIdle(id = POKE_MAIN) {
 function pokeIdleSnapshot() {
   const others = config.pokeBonusOthers || {};
   return {
-    open: pokeOpen(), visible: !!pokeActive, active: pokeActive,
+    open: pokeOpen(), visible: !!pokeActive, active: pokeActive, grid: pokeGrid,
     accounts: pokeAccountIds().map((id) => ({ id, label: pokeLabel(id), open: pokeIsOpen(id), bonus: id === POKE_MAIN ? null : (others[id] || null) })),
     readAt: config.pokeReadAt || null,
     source: { twitch: pokeBase('twitch').source || null, kick: pokeBase('kick').source || null },
@@ -1810,7 +1842,7 @@ const altLast = new Map();  // id -> último status recebido da alt (para a tabe
 const altFull = new Map();  // id -> último estado completo da alt (para responder comandos da principal)
 // Comandos que são sempre da principal (o PokeIdle e as contas moram na janela dela).
 const LOCAL_CHANNELS = new Set([
-  'tk:switch', 'tk:add', 'tk:remove', 'pokeidle:show', 'pokeidle:hide', 'pokeidle:close', 'pokeidle:add',
+  'tk:switch', 'tk:add', 'tk:remove', 'pokeidle:openAll', 'pokeidle:grid', 'pokeidle:show', 'pokeidle:hide', 'pokeidle:close', 'pokeidle:add',
   'pokeidle:remove', 'cockpit:open', 'report:save', 'accounts:list', 'accounts:open', 'accounts:create', 'app:quit',
 ]);
 
@@ -2060,6 +2092,20 @@ ipcMain.handle('bonus:set', (_e, platform, tipo, msLeft) => {
 });
 ipcMain.handle('pokeidle:show', async (_e, id, bounds) => { await showPokeIdle(id || POKE_MAIN, bounds); return snapshot(); });
 ipcMain.handle('pokeidle:hide', () => { hidePokeIdle(); return snapshot(); });
+// Abre o PokeIdle de todas as contas de uma vez (por trás) e mostra o da conta escolhida.
+// Liga/desliga a grade (abre o PokeIdle das contas que ainda não estavam abertas).
+ipcMain.handle('pokeidle:grid', async (_e, on, current, bounds) => {
+  pokeGrid = !!on;
+  if (bounds) pokeBounds = bounds;
+  if (pokeGrid) for (const id of pokeAccountIds()) await ensurePokeView(id).catch(() => {});
+  await showPokeIdle(pokeAccountIds().includes(current) ? current : (pokeActive || POKE_MAIN), bounds);
+  return snapshot();
+});
+ipcMain.handle('pokeidle:openAll', async (_e, current, bounds) => {
+  for (const id of pokeAccountIds()) await ensurePokeView(id).catch(() => {});
+  await showPokeIdle(pokeAccountIds().includes(current) ? current : POKE_MAIN, bounds);
+  return snapshot();
+});
 ipcMain.handle('cockpit:open', (_e, id) => { openCockpit(id); });
 ipcMain.handle('pokeidle:close', (_e, id) => { closePokeIdle(id || POKE_MAIN); return snapshot(); });
 // Conta nova do PokeIdle: só um nome; o login é feito na aba dela.
