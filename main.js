@@ -19,12 +19,15 @@ const nodeNet = require('net');
 const HEADLESS = process.argv.includes('--tk-fundo');
 const HANDLERS = new Map();      // canal -> função (para atender pelo canal de controle)
 let routeHandler = null;         // definido mais abaixo: repassa para a conta alt escolhida
+let localResult = null;          // definido mais abaixo: com uma alt na tela, a resposta é o estado dela
 const ipcHandleOriginal = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, fn) => {
   HANDLERS.set(channel, fn);
   return ipcHandleOriginal(channel, (e, ...args) => {
     const routed = routeHandler && routeHandler(channel, args);
-    return routed !== undefined ? routed : fn(e, ...args);
+    if (routed !== undefined) return routed;
+    const value = fn(e, ...args);
+    return localResult ? Promise.resolve(value).then((v) => localResult(v)) : value;
   });
 };
 const pipeName = (id) => `\\\\.\\pipe\\tk-multistream-${id}`;
@@ -1803,19 +1806,30 @@ ipcMain.handle('poke:bonus', (_e, found) => {
 // ---------- Contas alt (lado da principal) ----------
 const altCores = new Map(); // id -> { id, sock, connected, pending, seq, proc, retry }
 let activeAlt = null;       // conta alt na tela (null = principal)
+const altLast = new Map();  // id -> último status recebido da alt (para a tabela de bônus de todas as contas)
+const altFull = new Map();  // id -> último estado completo da alt (para responder comandos da principal)
 // Comandos que são sempre da principal (o PokeIdle e as contas moram na janela dela).
 const LOCAL_CHANNELS = new Set([
   'tk:switch', 'tk:add', 'tk:remove', 'pokeidle:show', 'pokeidle:hide', 'pokeidle:close', 'pokeidle:add',
   'pokeidle:remove', 'cockpit:open', 'report:save', 'accounts:list', 'accounts:open', 'accounts:create', 'app:quit',
 ]);
 
+// Fim de cada bônus (XP, Capture, Lure) por plataforma, para a tabela com todas as contas.
+const bonusEnds = (list) => (list || []).map((b) => b.endsAt || null);
 function tkSnapshot() {
+  const now = Date.now();
   return {
     active: activeAlt || POKE_MAIN,
-    accounts: pokeAccountIds().map((id) => ({
-      id, label: pokeLabel(id),
-      connected: id === POKE_MAIN || !!(altCores.get(id) || {}).connected,
-    })),
+    accounts: pokeAccountIds().map((id) => {
+      const last = id === POKE_MAIN ? null : altLast.get(id);
+      return {
+        id, label: pokeLabel(id),
+        connected: id === POKE_MAIN || !!(altCores.get(id) || {}).connected,
+        bonus: id === POKE_MAIN
+          ? { twitch: bonusEnds(activeBonuses(now, 'twitch')), kick: bonusEnds(activeBonuses(now, 'kick')) }
+          : last ? { twitch: bonusEnds(last.twitchBonuses), kick: bonusEnds(last.bonuses) } : null,
+      };
+    }),
   };
 }
 
@@ -1828,7 +1842,11 @@ function decorateState(s) {
     tk: tkSnapshot(),
   };
 }
-const decorateIfState = (v) => (v && typeof v === 'object' && Array.isArray(v.channels) ? decorateState(v) : v);
+const decorateIfState = (v) => {
+  if (!(v && typeof v === 'object' && Array.isArray(v.channels))) return v;
+  if (activeAlt) { altLast.set(activeAlt, { bonuses: v.bonuses, twitchBonuses: v.twitchBonuses }); altFull.set(activeAlt, v); }
+  return decorateState(v);
+};
 
 function spawnCore(id) {
   const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
@@ -1911,6 +1929,7 @@ function proxy(id, ch, args) {
 }
 
 function pushAltStatus(id, payload) {
+  if (payload && Array.isArray(payload.channels)) { altLast.set(id, { bonuses: payload.bonuses, twitchBonuses: payload.twitchBonuses }); altFull.set(id, payload); }
   if (activeAlt !== id || !payload || !mainWin || mainWin.isDestroyed()) return;
   mainWin.webContents.send('status', decorateState(payload));
 }
@@ -1938,10 +1957,19 @@ async function switchAccount(id) {
   startCore(id);
   if (!(await waitConnected(id))) return { ...snapshotForUi(), error: `A conta ${id} ainda está abrindo. Tente de novo em alguns segundos.` };
   activeAlt = id;
-  return decorateState(await proxy(id, 'state:get', []));
+  const st = await proxy(id, 'state:get', []);
+  altFull.set(id, st);
+  if (st) altLast.set(id, { bonuses: st.bonuses, twitchBonuses: st.twitchBonuses });
+  return decorateState(st);
 }
 const snapshotForUi = () => ({ ...snapshot(), tk: tkSnapshot() });
 
+// Comandos da principal (PokeIdle, contas) devolvem estado: com uma alt na tela, devolve o dela.
+localResult = (v) => {
+  if (ACCOUNT || !activeAlt || !(v && typeof v === 'object' && Array.isArray(v.channels))) return v;
+  const alt = altFull.get(activeAlt);
+  return alt ? decorateState({ ...alt, ...(v.error ? { error: v.error } : {}), ...(v.added ? { added: v.added } : {}) }) : v;
+};
 routeHandler = (channel, args) => {
   if (ACCOUNT || !activeAlt || LOCAL_CHANNELS.has(channel)) return undefined;
   return proxy(activeAlt, channel, args).then(decorateIfState);

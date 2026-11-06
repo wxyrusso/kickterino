@@ -611,9 +611,18 @@ function renderBonusBox() {
     note.title = 'Carregadas da pasta do seu Chrome. Quando o Chrome atualizar uma delas, o app pega a versão nova ao reiniciar.';
     box.append(note);
   }
+  // Tabela com todas as contas: bônus nas linhas, contas nas colunas.
+  box.append(bonusMatrix(now));
+  // Os cronômetros da conta na tela, para corrigir à mão (+1h, digitar, zerar).
+  const det = el('details', 'bonus-edit-box');
+  if (bonusEditOpen) det.open = true;
+  det.ontoggle = () => { bonusEditOpen = det.open; };
+  const acc = (((state.tk || {}).accounts) || []).find((a) => a.id === currentAccount());
+  det.append(el('summary', null, `Ajustar tempos de ${acc ? acc.label : 'Principal'}`));
   const cols = el('div', 'bonus-cols');
   cols.append(bonusColumn('twitch', state.twitchBonuses, now), bonusColumn('kick', state.bonuses, now));
-  box.append(cols);
+  det.append(cols);
+  box.append(det);
   const recent = state.purchases || [];
   if (recent.length) {
     const list = el('div', 'purchases');
@@ -628,8 +637,46 @@ function renderBonusBox() {
       row.append(x);
       list.append(row);
     }
-    box.append(list);
+    det.append(list);
   }
+}
+
+let bonusEditOpen = false;
+const BONUS_ROWS = [['XP', '⚡'], ['Capture Boost', '🎯'], ['Secret Lure', '✨']];
+function bonusMatrix(now) {
+  const accounts = ((state.tk || {}).accounts) || [{ id: 'principal', label: 'Principal', bonus: { twitch: (state.twitchBonuses || []).map((b) => b.endsAt), kick: (state.bonuses || []).map((b) => b.endsAt) } }];
+  const t = el('table', 'bonus-matrix');
+  const head = el('tr');
+  head.append(el('th'));
+  for (const a of accounts) {
+    const th = el('th', a.id === currentAccount() ? 'on' : '', a.label);
+    th.title = `Mostrar a conta ${a.label}`;
+    th.onclick = () => switchAccount(a.id);
+    head.append(th);
+  }
+  const thead = el('thead'); thead.append(head); t.append(thead);
+  const body = el('tbody');
+  for (const platform of ['twitch', 'kick']) {
+    const sec = el('tr', `bm-sec ${platform}`);
+    const td = el('td'); td.colSpan = accounts.length + 1;
+    td.append(platIcon(platform), el('b', null, platform === 'twitch' ? 'Twitch' : 'Kick'));
+    sec.append(td); body.append(sec);
+    BONUS_ROWS.forEach(([name, ico], i) => {
+      const tr = el('tr');
+      tr.append(el('td', 'bm-name', `${ico} ${name}`));
+      for (const a of accounts) {
+        const end = a.bonus && a.bonus[platform] ? a.bonus[platform][i] : null;
+        const on = end && end > now;
+        const cell = el('td', `bm-cell ${platform}` + (on ? ' on' : '') + (a.id === currentAccount() ? ' cur' : ''), on ? dclock(end - now) : (a.bonus ? '—' : '…'));
+        cell.title = on ? `${a.label}: ${name} (${platform === 'twitch' ? 'Twitch' : 'Kick'}) acaba às ${timeStr(new Date(end))}` : (a.bonus ? `${a.label}: sem ${name} ativo` : `${a.label}: ainda carregando`);
+        cell.onclick = () => switchAccount(a.id);
+        tr.append(cell);
+      }
+      body.append(tr);
+    });
+  }
+  t.append(body);
+  return t;
 }
 const BONUS_NAMES = { 300: '+15% XP', 500: '+15% Capture Boost', 1000: '+15% Secret Lure' };
 setInterval(() => { if (!$('#panel').hidden) renderBonusBox(); }, 20 * 1000);
