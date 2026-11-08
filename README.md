@@ -20,6 +20,7 @@
 - **Baú de bônus da Twitch** (+50 pontos a cada ~15 min) coletado sozinho.
 - **Bônus do PokeIdle por plataforma:** tempo restante de cada bônus da Twitch e da Kick, lido do jogo aberto no app ou digitado à mão, com aviso antes de acabar.
 - **Foco em bônus:** as vagas vão para os canais mais perto de 300 pontos, depois 500, 1.000 e cada milhar seguinte.
+- **Resgate automático:** botões separados para Twitch e Kick; cada plataforma tem sua própria escolha de bônus e percorre somente seus canais na conta selecionada.
 - **Modo leve:** lives ocultas em 160p, sem som, sem imagens e sem anúncios.
 - **Modo 24/7:** fica na bandeja, inicia com o Windows e se recupera de quedas e de suspensão.
 
@@ -32,6 +33,7 @@ O app é feito em Electron e não tem servidor próprio.
 - **Twitch:** o chat vem do IRC oficial da Twitch (só leitura sem login; para enviar, a pessoa conecta o próprio app da Twitch). Quem está ao vivo vem da API Helix. O saldo e o baú são lidos da página da live que está tocando.
 - **PokeIdle:** o jogo aceita só uma sessão por conta, então o app nunca abre o jogo escondido. O botão "Abrir PokeIdle" abre o jogo numa janela onde a pessoa joga, e o app lê os tempos de bônus das mensagens que o próprio jogo recebe.
 - A cada minuto, o app confere o estado dos canais e reorganiza as vagas.
+- Cada seção da matriz de bônus tem seu próprio botão de resgate. O app salva uma escolha separada por conta e plataforma, percorre apenas os canais daquela plataforma e só abre um chat quando o saldo é igual ou maior que o custo do bônus. Na Twitch, compra o maior pacote que o saldo pagar (1h, 3h, 5h ou 10h); na Kick, o de 1h, repetindo enquanto sobrar saldo. Canais com saldo menor ou não confirmado são pulados sem abrir o chat, e a loja roda escondida.
 
 ## Configurar a Twitch
 
@@ -60,6 +62,7 @@ Para adicionar canais da Twitch, use `twitch:canal` ou cole o link `twitch.tv/ca
 - Não há servidor do TK MultiStream: as sessões, o Client Secret e o token da Twitch ficam só no seu PC.
 - Só a Kick, a Twitch, o PokeIdle e as páginas de login abrem dentro do app. Outros sites são bloqueados, e nenhuma página acessa câmera, microfone ou localização.
 - **Sair da conta** apaga do app os dados de login da plataforma escolhida, mantendo a lista de canais e as preferências.
+- O resgate automático gasta os pontos da Kick ou da Twitch no bônus escolhido enquanto houver saldo. Ele só começa quando você clica em Resgatar.
 - Nunca envie a pasta de dados do app nem o seu Client Secret para ninguém.
 
 ## Desenvolvimento

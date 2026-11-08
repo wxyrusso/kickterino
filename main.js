@@ -283,6 +283,7 @@ function createApiWindow() {
 
 // Loja de pontos: o chat popout oficial da Kick, que tem o saldo e as recompensas do canal.
 const storeWindows = new Map();
+const pendingAutoKickPurchases = new Map();
 // ---------- Twitch: resgates de bônus lidos da janela de pontos ----------
 // Na Twitch os bônus do PokeIdle saem em pacotes de horas (1h, 3h, 5h, 10h), então a queda do saldo
 // não diz o que foi comprado (3.000 pode ser 10h de XP, 6h de Capture ou 3h de Lure). A janela de
@@ -329,18 +330,20 @@ function watchStoreRedemptions(slug, win) {
   const recent = new Map(); // texto -> instante (a mesma linha pode aparecer duas vezes)
   const install = () => win.webContents.executeJavaScript(REDEEM_WATCH_SCRIPT).catch(() => {});
   win.webContents.on('did-finish-load', install);
-  const timer = setInterval(async () => {
-    if (win.isDestroyed()) return clearInterval(timer);
+  const flush = async () => {
+    if (win.isDestroyed()) return [];
     const lines = await win.webContents.executeJavaScript('(window.__stRedeem || []).splice(0)').catch(() => []);
-    if (!lines.length) return;
+    if (!lines.length) return [];
     const login = await twitchLogin();
     const now = Date.now();
     let added = 0;
+    const parsed = [];
     for (const line of lines) {
       if (now - (recent.get(line) || 0) < 10 * 1000) continue;
       recent.set(line, now);
       const r = parseRedemption(line, login);
       if (!r) continue;
+      parsed.push(r);
       for (let i = 0; i < r.hours; i++) config.purchases.push({ t: now + added + i, cost: r.cost, slug, platform: 'twitch', source: 'loja' });
       added += r.hours;
       const s = status.get(slug);
@@ -354,8 +357,17 @@ function watchStoreRedemptions(slug, win) {
       send('status', snapshot());
       updateTray();
     }
-  }, 3000);
+    return parsed;
+  };
+  const timer = setInterval(() => flush(), 3000);
   win.on('closed', () => clearInterval(timer));
+  return flush;
+}
+
+function storeChatUrl(slug) {
+  return platformOf(slug) === 'twitch'
+    ? `${TWITCH}/popout/${nameOf(slug)}/chat`
+    : `${KICK}/popout/${slug}/chat`;
 }
 
 function openStore(slug, title = `Pontos — ${slug}`) {
@@ -366,7 +378,7 @@ function openStore(slug, title = `Pontos — ${slug}`) {
     icon: path.join(__dirname, 'build', 'icon.png'),
     webPreferences: { partition: partitionOf(slug) },
   });
-  win.loadURL(platformOf(slug) === 'twitch' ? `${TWITCH}/popout/${nameOf(slug)}/chat` : `${KICK}/popout/${slug}/chat`);
+  win.loadURL(storeChatUrl(slug));
   win.on('page-title-updated', (e) => e.preventDefault()); // mantém o "(2 de 4)" do modo antes de dormir
   if (platformOf(slug) === 'twitch') watchStoreRedemptions(slug, win);
   win.on('closed', () => {
@@ -663,6 +675,17 @@ function registerPurchases(slug, drop) {
   configDirty = true;
 }
 
+function addKnownPurchase(slug, cost, hours, source = 'auto') {
+  const now = Date.now();
+  for (let i = 0; i < hours; i++) {
+    config.purchases.push({ t: now + i, cost, slug, platform: platformOf(slug), source });
+  }
+  config.purchases = config.purchases.filter((p) => now - p.t < KEEP_PURCHASES_MS);
+  saveConfig();
+  configDirty = false;
+  updateTray();
+}
+
 // Fim de cada bônus, somando as horas na ordem das compras.
 function bonusIntervals(purchases = config.purchases) {
   const byCost = {};
@@ -743,6 +766,513 @@ function checkBonusEnding() {
 // próprio jogo recebe pelo WebSocket dele.
 const POKEIDLE_URL = 'https://pokeidle.io/app';
 const POKEIDLE_PARTITION = 'persist:pokeidle';
+
+const POKE_REDEEM_META = {
+  xp: { cost: 300, name: '+15% XP' },
+  captura: { cost: 500, name: '+15% Capture Boost' },
+  shiny: { cost: 1000, name: '+15% Secret Lure' },
+};
+
+// A janela da loja é o chat oficial da plataforma. Primeiro abrimos o seletor de pontos;
+// só enviamos o formulário da recompensa depois de validar o bônus e o preço escolhidos.
+function pokeRedeemOpenScript(platform) {
+  return `(() => {
+    const platform = ${JSON.stringify(platform)};
+    const norm = (s) => String(s || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/\\s+/g, ' ').trim().toLowerCase();
+    const kickPanel = document.querySelector('#rewards-panel');
+    const twitchRewardPanel = [...document.querySelectorAll('[role="dialog"],dialog,[class*="modal" i],[class*="confirm" i]')]
+      .some((e) => e.getClientRects().length && /(pokeidle|\\+\\s*15\\s*%|15\\s*%)/.test(norm(e.innerText || '')));
+    if ((platform === 'kick' && kickPanel && kickPanel.getClientRects().length)
+      || (platform === 'twitch' && twitchRewardPanel)) return { ready: true, clicked: false };
+    const pathname = location.pathname || '';
+    const hostname = location.hostname || '';
+    if ((platform === 'kick' && /\\/login(?:\\/|$)/i.test(pathname))
+      || (platform === 'twitch' && /^(id|passport)\\.twitch\\.tv$/i.test(hostname))) {
+      return { ready: false, clicked: false, loginRequired: true };
+    }
+    const loading = platform === 'kick' ? document.querySelector('[data-testid="channel-points-loading-button"]') : null;
+    if (loading) return { ready: false, clicked: false, loading: true };
+    const known = platform === 'kick'
+      ? document.querySelector('[data-testid="channel-points-button"],[data-testid="channel-points-error-button"]')
+      : document.querySelector('[data-test-selector="community-points-summary"],[data-a-target="community-points-summary"]');
+    const all = [...document.querySelectorAll('button,[role="button"],[aria-label],[title],[data-testid],[data-test-selector],[data-a-target]')];
+    const control = known || all.find((e) => {
+      const t = norm((e.innerText || e.textContent || '') + ' ' + (e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('title') || '') + ' ' + (e.getAttribute('data-test-selector') || '') + ' ' + (e.getAttribute('data-a-target') || '') + ' ' + (e.getAttribute('data-testid') || ''));
+      return /community points|channel points|points balance|\\bpoints\\b|pontos do canal|pontos da comunidade|\\bpontos\\b|saldo de pontos|rewards|recompensas/.test(t);
+    });
+    if (!control) return { ready: false, clicked: false, loading: false };
+    const button = control.closest('button,[role="button"]') || control;
+    if (button.disabled || button.getAttribute('aria-disabled') === 'true') return { ready: false, clicked: false, loading: true };
+    button.click();
+    return { ready: false, clicked: true };
+  })()`;
+}
+
+function pokeRedeemSelectScript(tipo) {
+  return `(() => {
+    const tipo = ${JSON.stringify(tipo)};
+    const base = { xp: 300, captura: 500, shiny: 1000 }[tipo];
+    const norm = (s) => String(s || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, ' ').replace(/\\s+/g, ' ').trim().toLowerCase();
+    const textOf = (e) => String(e.innerText || e.textContent || '').replace(/\\s+/g, ' ').trim();
+    const matches = (s) => {
+      const t = norm(s);
+      if (!/(pokeidle|\\+\\s*15\\s*%|15\\s*%)/.test(t)) return false;
+      if (tipo === 'xp') return /\\bxp\\b/.test(t) && !/capture|captura|lure/.test(t);
+      if (tipo === 'captura') return /capture\\s*boost|captura\\s*boost/.test(t);
+      return /secret\\s*lure|lure\\s*secreta/.test(t);
+    };
+    const numberValues = (s) => {
+      const values = [];
+      for (const m of String(s || '').matchAll(/\\d{1,3}(?:[.,\\s]\\d{3})+|\\d{1,5}/g)) {
+        const n = Number(m[0].replace(/\\D/g, ''));
+        if (Number.isSafeInteger(n) && n >= base && n <= base * 10 && n % base === 0) values.push(n);
+      }
+      for (const m of String(s || '').matchAll(/(\\d+(?:[.,]\\d+)?)\\s*k\\b/gi)) {
+        const n = Math.round(Number(m[1].replace(',', '.')) * 1000);
+        if (Number.isSafeInteger(n) && n >= base && n <= base * 10 && n % base === 0) values.push(n);
+      }
+      return [...new Set(values)];
+    };
+    const panelText = norm(document.querySelector('#rewards-panel')?.innerText || '');
+    const pausedNotice = /(?:^|\\b)(?:rewards?|recompensas?|resgates?)\\b.{0,60}\\b(?:temporarily\\s+)?paused\\b/.test(panelText)
+      || /(?:^|\\b)(?:rewards?|recompensas?|resgates?)\\b.{0,60}\\bpausad[ao]s?\\b/.test(panelText);
+    const clickables = [...document.querySelectorAll('button,[role="button"]')].filter((el) => el.getClientRects().length);
+    const allMatches = clickables.map((el) => {
+      const text = textOf(el);
+      const prices = numberValues(text);
+      // Resgata só o pacote básico de 1h: XP custa 300, Capture Boost 500 e Secret Lure 1.000.
+      // Não clicar em um botão pai que agrupe várias recompensas/preços.
+      const price = prices.length === 1 ? prices[0] : 0;
+      const duration = /\\b(\\d{1,2})\\s*(?:h|hours?|horas?)\\b/i.exec(text);
+      const hours = duration ? Number(duration[1]) : (price && base ? price / base : 0);
+      const disabled = !!el.disabled || el.getAttribute('aria-disabled') === 'true' || /disabled|is-disabled/.test(String(el.className || '').toLowerCase());
+      return { el, text, price, hours, disabled };
+    }).filter((x) => matches(x.text));
+    if (!allMatches.length) return pausedNotice ? { action: 'paused' } : { action: 'waiting' };
+    const exactPackage = allMatches.filter((x) => x.price === base && x.hours === 1);
+    if (!exactPackage.length) return pausedNotice ? { action: 'paused' } : { action: 'target-missing', cost: base };
+    const available = exactPackage.filter((x) => !x.disabled);
+    if (!available.length) return pausedNotice ? { action: 'paused' } : { action: 'no-eligible' };
+    available.sort((a, b) => a.text.length - b.text.length);
+    const chosen = available[0];
+    chosen.el.click();
+    return { action: 'selected', cost: base, hours: 1 };
+  })()`;
+}
+
+function pokeRedeemConfirmScript(tipo, price, platform) {
+  return `(() => {
+    const tipo = ${JSON.stringify(tipo)};
+    const price = ${Number(price) || 0};
+    const platform = ${JSON.stringify(platform)};
+    const norm = (s) => String(s || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, ' ').replace(/\\s+/g, ' ').trim().toLowerCase();
+    const matches = (s) => {
+      const t = norm(s);
+      if (!/(pokeidle|\\+\\s*15\\s*%|15\\s*%)/.test(t)) return false;
+      if (tipo === 'xp') return /\\bxp\\b/.test(t) && !/capture|captura|lure/.test(t);
+      if (tipo === 'captura') return /capture\\s*boost|captura\\s*boost/.test(t);
+      return /secret\\s*lure|lure\\s*secreta/.test(t);
+    };
+    const isDisabled = (e) => !!e.disabled || e.getAttribute('aria-disabled') === 'true';
+    const textOf = (e) => String(e.innerText || e.textContent || '').replace(/\\s+/g, ' ').trim();
+    // Kick abre os detalhes como uma tela de formulário dentro do painel #rewards-panel,
+    // não como um diálogo/modal. O submit do formulário é a ação que confirma o resgate.
+    const kickPanel = document.querySelector('#rewards-panel');
+    const scopes = platform === 'kick'
+      ? (kickPanel ? [kickPanel] : [])
+      : [...document.querySelectorAll('[role="dialog"],dialog,[class*="modal" i],[class*="confirm" i]')];
+    const scope = scopes.find((e) => matches(textOf(e)) && (platform !== 'kick' || e.querySelector('form')));
+    if (!scope) return { action: 'waiting' };
+    const form = scope.querySelector('form');
+    const confirmationArea = platform === 'kick' ? form : scope;
+    const body = norm(textOf(confirmationArea));
+    if (!matches(body)) return { action: 'mismatch-bonus' };
+    if (/insufficient|not enough points|pontos insuficientes|pontos necessarios|saldo insuficiente/.test(body)) return { action: 'insufficient' };
+    const buttonArea = confirmationArea;
+    const buttons = [...buttonArea.querySelectorAll('button,[role="button"]')];
+    const confirm = buttons.find((e) => {
+      const t = norm((e.innerText || e.textContent || '') + ' ' + (e.getAttribute('aria-label') || ''));
+      const isSubmit = e.matches('button[type="submit"],input[type="submit"]');
+      return (isSubmit || /^(confirm|confirmar|redeem|resgatar|buy|comprar|claim|resgatar bonus)(?:\\b|\\s)/.test(t))
+        && /confirm|confirmar|redeem|resgatar|buy|comprar|claim/.test(t)
+        && !/cancel|close|back|voltar|nao|no\\b/.test(t) && !isDisabled(e);
+    });
+    if (!confirm) return { action: 'waiting' };
+    if (price) {
+      const values = [...body.matchAll(/\\d{1,3}(?:[.,\\s]\\d{3})+|\\d{1,5}/g)].map((m) => Number(m[0].replace(/\\D/g, '')));
+      for (const m of body.matchAll(/(\\d+(?:[.,]\\d+)?)\\s*(?:k|mil|thousand)\\b/gi)) {
+        const n = Math.round(Number(m[1].replace(',', '.')) * 1000);
+        if (Number.isSafeInteger(n)) values.push(n);
+      }
+      const prices = values.filter((n) => n >= 300 && n <= 10000);
+      if (!prices.includes(price)) return { action: 'mismatch' };
+    }
+    confirm.click();
+    return { action: 'confirmed' };
+  })()`;
+}
+
+// ---------- Resgate na Twitch (estrutura real da loja do chat popout) ----------
+// Na Twitch a loja é o painel "Power-ups e recompensas" do chat: cada recompensa é um item
+// (rewardListItem) com um botão que só tem o ícone e o preço; o nome fica fora do botão. Clicar
+// no botão abre a confirmação DENTRO do mesmo painel (reward-center), com "Voltar", "Fechar" e o
+// botão de resgatar (ou "Saldo necessário", desativado, quando não há pontos).
+// Modo ensaio (KT_REDEEM_DRYRUN=1): faz tudo, menos o clique final em resgatar.
+const REDEEM_DRYRUN = !!process.env.KT_REDEEM_DRYRUN;
+
+function twitchRedeemOpenScript() {
+  return `(() => {
+    if (/^(id|passport)\\.twitch\\.tv$/i.test(location.hostname) || /\\/login/.test(location.pathname)) return { loginRequired: true };
+    if (document.querySelector('[class*="rewardListItem"], .reward-center__content')) return { ready: true };
+    const box = document.querySelector('[data-test-selector="community-points-summary"]');
+    if (!box) return { waiting: true };
+    const buttons = [...box.querySelectorAll('button')];
+    const btn = buttons.find((b) => /pontos|points|bits|saldo|balance/i.test(b.getAttribute('aria-label') || '')) || buttons[0];
+    if (!btn) return { waiting: true };
+    btn.click();
+    return { clicked: true };
+  })()`;
+}
+
+// Escolhe a recompensa de 1h do bônus pedido (o nome sem "(3h)", "(5h)"...) e abre a confirmação.
+function twitchRedeemSelectScript(tipo, balance) {
+  return `(() => {
+    const tipo = ${JSON.stringify(tipo)};
+    const balance = ${typeof balance === 'number' ? balance : 'null'};
+    const norm = (s) => String(s || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/\\s+/g, ' ').trim().toLowerCase();
+    const isType = (t) => {
+      if (!/pokeidle|15\\s*%/.test(t)) return false;
+      if (tipo === 'xp') return /\\bxp\\b/.test(t) && !/capture|lure/.test(t);
+      if (tipo === 'captura') return /capture\\s*boost/.test(t);
+      return /secret\\s*lure/.test(t);
+    };
+    const items = [...document.querySelectorAll('[class*="rewardListItem"]')];
+    if (!items.length) {
+      // Ainda na tela de confirmação/sucesso de um resgate anterior: volta para a lista.
+      const back = [...document.querySelectorAll('.reward-center__content button')].find((b) => /voltar|back/i.test(b.getAttribute('aria-label') || ''));
+      if (back) { back.click(); return { action: 'waiting', back: true }; }
+      return { action: 'waiting' };
+    }
+    const found = items.map((it) => {
+      const costEl = it.querySelector('[data-test-selector="cost"]');
+      const cost = Number(String(costEl ? costEl.innerText : '').replace(/\\D/g, '')) || 0;
+      const title = String(it.innerText || '').replace(costEl ? costEl.innerText : '', '').replace(/\\s+/g, ' ').trim();
+      const h = /\\((\\d{1,2})\\s*h\\)/i.exec(title);
+      return { it, cost, title, hours: h ? Number(h[1]) : 1 };
+    }).filter((x) => isType(norm(x.title)));
+    if (!found.length) return { action: 'target-missing' };
+    // O maior pacote que o saldo paga (o preço por hora é o mesmo; menos cliques). Sem saldo
+    // conhecido, só o de 1h. Alguns canais não vendem 1h (só 5h e 10h, por exemplo).
+    const affordable = found.filter((x) => x.cost > 0 && (balance == null ? x.hours === 1 : x.cost <= balance));
+    affordable.sort((a, b) => b.hours - a.hours);
+    const one = affordable[0];
+    if (!one) {
+      const cheapest = found.slice().sort((a, b) => a.cost - b.cost)[0];
+      return { action: 'too-expensive', cheapest: cheapest.cost, hours: cheapest.hours };
+    }
+    const btn = one.it.querySelector('button');
+    if (!btn || btn.disabled) return { action: 'no-eligible' };
+    btn.click();
+    return { action: 'selected', cost: one.cost, hours: one.hours, title: one.title };
+  })()`;
+}
+
+// Na confirmação: confere o bônus e o preço, e clica no botão de resgatar (nunca em Voltar/Fechar).
+function twitchRedeemConfirmScript(tipo, price, dryRun) {
+  return `(() => {
+    const tipo = ${JSON.stringify(tipo)};
+    const price = ${Number(price) || 0};
+    const norm = (s) => String(s || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/\\s+/g, ' ').trim().toLowerCase();
+    const scope = document.querySelector('.reward-center__content');
+    if (!scope || document.querySelector('[class*="rewardListItem"]')) return { action: 'waiting' };
+    const body = norm(scope.innerText);
+    const okType = tipo === 'xp' ? /\\bxp\\b/.test(body) && !/capture boost|secret lure/.test(body)
+      : tipo === 'captura' ? /capture boost/.test(body) : /secret lure/.test(body);
+    if (!okType) return { action: 'mismatch-bonus' };
+    const buttons = [...scope.querySelectorAll('button')].filter((b) => {
+      const aria = norm(b.getAttribute('aria-label'));
+      return !/voltar|back|fechar|close|mais opcoes|more options|voce tem|you have/.test(aria);
+    });
+    const withPrice = buttons.filter((b) => norm(b.innerText).replace(/\\D/g, '').includes(String(price)));
+    if (!withPrice.length) return { action: 'waiting' };
+    const btn = withPrice[0];
+    const label = String(btn.innerText || '').replace(/\\s+/g, ' ').trim();
+    if (/temporarily unavailable|temporariamente indisponivel|indisponivel|unavailable|paused|pausad/.test(body)) return { action: 'paused', label };
+    if (/saldo necessario|not enough|insufficient/.test(norm(label) + ' ' + body)) return { action: 'insufficient', label };
+    // Desativado sem falta de saldo: limite de resgates, tempo de espera ou fila do streamer.
+    if (btn.disabled) return { action: 'blocked', label, motivo: body.slice(-160) };
+    if (!/resgat|redeem|obter|get/.test(norm(label))) return { action: 'unknown-button', label };
+    if (${dryRun ? 'true' : 'false'}) return { action: 'dry-run', label };
+    btn.click();
+    return { action: 'confirmed', label };
+  })()`;
+}
+
+const redeemJobs = new Map();
+let redeemJobSeq = 0;
+
+function redeemJobSnapshot(job) {
+  return {
+    id: job.id, type: job.type, platform: job.platform, status: job.status, total: job.total, done: job.done,
+    current: job.current, cancelRequested: job.cancelRequested, results: job.results, error: job.error || null,
+  };
+}
+
+function rememberRedeemJob(job) {
+  redeemJobs.set(job.id, job);
+  while (redeemJobs.size > 20) {
+    const oldest = redeemJobs.keys().next().value;
+    if (redeemJobs.get(oldest).status === 'running') break;
+    redeemJobs.delete(oldest);
+  }
+}
+
+async function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+async function openAutoStore(slug) {
+  const displayName = (status.get(slug) || {}).displayName || nameOf(slug);
+  const win = new BrowserWindow({
+    width: 420, height: 720, x: 0, y: 0, show: false, title: `Pontos — ${displayName}`, autoHideMenuBar: true,
+    type: 'toolbar', skipTaskbar: true, focusable: false, opacity: 0,
+    backgroundColor: '#0b0e0f', webPreferences: { partition: partitionOf(slug), backgroundThrottling: false },
+  });
+  win.setIgnoreMouseEvents(true);
+  win.webContents.setAudioMuted(true);
+  const visibleStore = storeWindows.get(slug);
+  const flush = platformOf(slug) === 'twitch' && (!visibleStore || visibleStore.isDestroyed())
+    ? watchStoreRedemptions(slug, win) : null;
+  await withTimeout(win.loadURL(storeChatUrl(slug)), 30 * 1000);
+  // A loja fica "aberta" para a página (como as lives escondidas), mas invisível e sem foco:
+  // o resgate roda por trás, sem janelas pulando na frente de quem está jogando.
+  if (!win.isDestroyed()) { if (isLinux) win.hide(); else win.showInactive(); }
+  return { win, flush };
+}
+
+async function redeemPokeBonusInChannel(slug, tipo, balanceBefore = null, sharedStore = null) {
+  const meta = POKE_REDEEM_META[tipo];
+  let win = sharedStore && sharedStore.win;
+  let flush = sharedStore && sharedStore.flush;
+  let ownsWindow = false;
+  const twitchBefore = config.purchases.length;
+  let kickBefore = typeof balanceBefore === 'number' ? balanceBefore : (status.get(slug) || {}).points;
+  try {
+    if (platformOf(slug) === 'kick' && kickBefore == null) {
+      await refreshChannel(slug).catch(() => {});
+      kickBefore = (status.get(slug) || {}).points;
+    }
+    if (!win || win.isDestroyed()) {
+      ({ win, flush } = await openAutoStore(slug));
+      ownsWindow = true;
+      await delay(1800);
+    }
+    let opened = null;
+    for (let i = 0; i < 12; i++) {
+      opened = await withTimeout(win.webContents.executeJavaScript(platformOf(slug) === 'twitch' ? twitchRedeemOpenScript() : pokeRedeemOpenScript('kick')), 8 * 1000).catch(() => null);
+      if (opened && opened.loginRequired) {
+        const platform = platformOf(slug);
+        return {
+          slug, status: 'skipped', reason: 'login-required',
+          message: `${platform === 'kick' ? 'Kick' : 'Twitch'} desconectada nesta conta. Faça login pelo botão correspondente e tente novamente.`,
+        };
+      }
+      if (opened && (opened.ready || opened.clicked)) break;
+      await delay(500);
+    }
+    if (!opened || (!opened.ready && !opened.clicked)) {
+      return { slug, status: 'skipped', message: 'Não encontrei o botão de pontos/recompensas.' };
+    }
+    let selected = null;
+    for (let i = 0; i < 10 && !selected; i++) {
+      await delay(i ? 500 : 900);
+      const choice = await withTimeout(win.webContents.executeJavaScript(platformOf(slug) === 'twitch' ? twitchRedeemSelectScript(tipo, kickBefore) : pokeRedeemSelectScript(tipo)), 8 * 1000).catch(() => null);
+      if (choice && choice.action === 'selected') selected = choice;
+      else if (choice && choice.action === 'no-eligible') {
+        return { slug, status: 'skipped', message: `O pacote de 1h por ${meta.cost.toLocaleString('pt-BR')} pontos não está disponível com o saldo atual.` };
+      }
+      else if (choice && choice.action === 'target-missing') {
+        return { slug, status: 'skipped', message: `Não encontrei o pacote de 1h por ${meta.cost.toLocaleString('pt-BR')} pontos; não cliquei em pacotes maiores.` };
+      }
+      else if (choice && choice.action === 'too-expensive') {
+        return { slug, status: 'skipped', message: `O pacote mais barato deste canal é de ${choice.hours} h por ${choice.cheapest.toLocaleString('pt-BR')} pontos; o saldo ainda não cobre.` };
+      }
+      else if (choice && choice.action === 'paused') {
+        return { slug, status: 'skipped', message: 'As recompensas deste canal estão pausadas pela Kick; passei para o próximo canal.' };
+      }
+    }
+    if (!selected) return { slug, status: 'skipped', message: 'Não achei uma recompensa PokeIdle disponível.' };
+
+    let confirmed = null;
+    for (let i = 0; i < 8; i++) {
+      await delay(i ? 500 : 350);
+      const answer = platformOf(slug) === 'twitch'
+        ? await withTimeout(win.webContents.executeJavaScript(twitchRedeemConfirmScript(tipo, selected.cost, REDEEM_DRYRUN)), 8 * 1000).catch(() => null)
+        : REDEEM_DRYRUN ? { action: 'dry-run', label: '(Kick: o ensaio para antes de confirmar)' }
+          : await withTimeout(win.webContents.executeJavaScript(pokeRedeemConfirmScript(tipo, selected.cost, 'kick')), 8 * 1000).catch(() => null);
+      if (answer && answer.action !== 'waiting') { confirmed = answer; break; }
+    }
+    if (!confirmed || confirmed.action !== 'confirmed') {
+      if (confirmed && confirmed.action === 'blocked') return { slug, status: 'skipped', message: 'A Twitch não deixa resgatar agora neste canal (limite de resgates ou tempo de espera).' };
+      if (confirmed && confirmed.action === 'paused') return { slug, status: 'skipped', message: 'A recompensa está pausada ou temporariamente indisponível neste canal.' };
+      if (confirmed && confirmed.action === 'dry-run') return { slug, status: 'skipped', reason: 'dry-run', message: `Ensaio: clicaria em "${confirmed.label}" (${selected.title || 'pacote de 1h'}, ${selected.cost} pts).` };
+      if (confirmed && confirmed.action === 'unknown-button') return { slug, status: 'skipped', message: `Botão de resgate não reconhecido ("${confirmed.label}"); não cliquei.` };
+      const message = confirmed && confirmed.action === 'insufficient'
+        ? 'A loja indicou saldo insuficiente.'
+        : confirmed && confirmed.action === 'mismatch-bonus'
+          ? 'A confirmação aberta é de outro bônus; não enviei o resgate.'
+        : confirmed && confirmed.action === 'mismatch'
+          ? 'O preço exibido não bate com o pacote escolhido; não enviei o resgate.'
+          : 'Não encontrei o formulário de resgate do bônus escolhido; não enviei o resgate.';
+      return { slug, status: 'skipped', message };
+    }
+
+    let verified = false;
+    let balanceAfter = null;
+    if (platformOf(slug) === 'twitch') {
+      // A Twitch confirma o resgate no chat. A janela fica aberta até a linha ser processada.
+      for (let i = 0; i < 8 && !verified; i++) {
+        await delay(1000);
+        if (flush) await flush();
+        verified = config.purchases.slice(twitchBefore).filter((p) => p.slug === slug && p.platform === 'twitch' && p.cost === meta.cost).length >= selected.hours;
+      }
+      if (!verified && storeWindows.has(slug)) {
+        verified = config.purchases.slice(twitchBefore).filter((p) => p.slug === slug && p.platform === 'twitch' && p.cost === meta.cost).length >= selected.hours;
+      }
+    } else {
+      pendingAutoKickPurchases.set(slug, {
+        cost: selected.cost, costPerHour: meta.cost, hours: selected.hours, expiresAt: Date.now() + 5 * 60 * 1000,
+      });
+      for (let i = 0; i < 3 && !verified; i++) {
+        await delay(i ? 1500 : 800);
+        await refreshChannel(slug).catch(() => {});
+        const after = (status.get(slug) || {}).points;
+        if (after != null) balanceAfter = after;
+        verified = kickBefore != null && after != null && kickBefore - after + 25 >= selected.cost;
+      }
+    }
+    return {
+      slug, status: verified ? 'redeemed' : 'submitted', cost: selected.cost, hours: selected.hours, balanceAfter,
+      message: verified ? `Resgatado (${selected.hours} h).` : `Confirmação enviada (${selected.hours} h); a loja ainda não confirmou o resultado.`,
+    };
+  } catch (error) {
+    return { slug, status: 'failed', message: String(error && error.message || error).slice(0, 180) };
+  } finally {
+    if (ownsWindow && win && !win.isDestroyed()) win.close();
+  }
+}
+
+async function redeemPokeBonusSeries(job, slug, initialBalance) {
+  const meta = POKE_REDEEM_META[job.type];
+  const platform = platformOf(slug);
+  const maxAttempts = Math.floor(initialBalance / meta.cost);
+  let store = null;
+  let balance = initialBalance;
+  let redeemed = 0;
+  let stopped = null;
+  try {
+    store = await openAutoStore(slug);
+    await delay(1800);
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (platform === 'kick' && balance == null) {
+        const refreshed = await refreshChannel(slug).catch(() => null);
+        balance = refreshed && refreshed.pointsRefreshed ? refreshed.points : null;
+      }
+      if (typeof balance !== 'number' || balance < meta.cost) break;
+      job.current = {
+        slug, label: (status.get(slug) || {}).displayName || nameOf(slug), platform,
+        phase: 'redeeming', attempt: attempt + 1, attempts: maxAttempts,
+      };
+      send('status', snapshot());
+      const result = await redeemPokeBonusInChannel(slug, job.type, balance, store);
+      if (result.status !== 'redeemed') { stopped = result; break; }
+      redeemed += result.hours || 1;
+      balance = typeof result.balanceAfter === 'number' ? result.balanceAfter : Math.max(0, balance - (result.cost || meta.cost));
+    }
+  } catch (error) {
+    stopped = { slug, status: 'failed', message: String(error && error.message || error).slice(0, 180) };
+  } finally {
+    if (store && store.win && !store.win.isDestroyed()) store.win.close();
+  }
+  if (!redeemed) return stopped || { slug, status: 'skipped', message: 'O saldo não cobre outro pacote de 1h.' };
+  const reason = stopped && stopped.message ? ` Parei: ${stopped.message}` : '';
+  return {
+    slug, status: 'redeemed', cost: meta.cost, hours: redeemed,
+    message: `Resgatado ${redeemed}x (${redeemed} h).${reason}`,
+  };
+}
+
+async function runRedeemJob(job) {
+  const blockedPlatforms = new Set();
+  const minimum = POKE_REDEEM_META[job.type].cost;
+  for (const slug of job.queue) {
+    if (job.cancelRequested) break;
+    const platform = platformOf(slug);
+    let st = status.get(slug) || {};
+    job.current = { slug, label: st.displayName || nameOf(slug), platform, phase: 'checking-points' };
+    let result;
+    if (blockedPlatforms.has(platform)) {
+      result = { slug, status: 'skipped', reason: 'login-required', message: `Pulado: faça login na ${platform === 'kick' ? 'Kick' : 'Twitch'} desta conta para acessar as recompensas.` };
+    } else {
+      let balance = st.points;
+      let balanceKnown = typeof balance === 'number';
+      if (platform === 'kick') {
+        const refreshed = await refreshChannel(slug).catch(() => null);
+        st = status.get(slug) || st;
+        balance = refreshed && refreshed.pointsRefreshed ? refreshed.points : null;
+        balanceKnown = typeof balance === 'number';
+      }
+      if (!balanceKnown) {
+        result = { slug, status: 'skipped', reason: 'points-unknown', message: 'Não consegui confirmar o saldo; não abri o chat deste canal.' };
+      } else if (balance < minimum) {
+        result = { slug, status: 'skipped', reason: 'insufficient-points', message: `Saldo ${balance.toLocaleString('pt-BR')}; precisa ter pelo menos ${minimum.toLocaleString('pt-BR')}. Não abri o chat.` };
+      } else {
+        job.current = { slug, label: st.displayName || nameOf(slug), platform, phase: 'opening-chat' };
+        send('status', snapshot());
+        result = await redeemPokeBonusSeries(job, slug, balance);
+      }
+    }
+    if (result.reason === 'login-required') blockedPlatforms.add(platform);
+    job.results.push({ ...result, label: st.displayName || nameOf(slug), platform: platformOf(slug) });
+    job.done++;
+    send('status', snapshot());
+  }
+  job.current = null;
+  job.status = job.cancelRequested ? 'cancelled' : 'done';
+  job.finishedAt = Date.now();
+  const bought = job.results.filter((r) => r.status === 'redeemed').length;
+  const units = job.results.reduce((sum, r) => sum + (r.status === 'redeemed' ? (r.hours || 1) : 0), 0);
+  send('toast', `🎁 Resgate automático concluído: ${units} resgate(s) confirmado(s) em ${bought} canal(is).`);
+}
+
+function startRedeemJob(tipo, platform) {
+  if (!POKE_REDEEM_META[tipo]) return { error: 'Escolha XP, Capture Boost ou Secret Lure.' };
+  if (!['twitch', 'kick'].includes(platform)) return { error: 'Escolha Twitch ou Kick.' };
+  if ([...redeemJobs.values()].some((j) => j.status === 'running' && j.platform === platform)) return { error: `Já existe um resgate automático da ${platform === 'twitch' ? 'Twitch' : 'Kick'} em andamento.` };
+  const queue = [...new Set(config.channels)].filter((slug) => typeof slug === 'string' && platformOf(slug) === platform);
+  if (!queue.length) return { error: `Esta conta não tem canais da ${platform === 'twitch' ? 'Twitch' : 'Kick'}.` };
+  const job = {
+    id: `redeem-${Date.now()}-${++redeemJobSeq}`, type: tipo, platform, status: 'running', queue,
+    total: queue.length, done: 0, current: null, cancelRequested: false, results: [],
+  };
+  rememberRedeemJob(job);
+  setImmediate(() => runRedeemJob(job).catch((error) => {
+    job.status = 'failed'; job.error = String(error && error.message || error).slice(0, 180); job.current = null;
+    send('status', snapshot());
+    send('toast', 'O resgate automático parou por um erro.');
+  }));
+  return redeemJobSnapshot(job);
+}
+
+function getRedeemJob(id) {
+  const job = redeemJobs.get(String(id || ''));
+  return job ? redeemJobSnapshot(job) : { error: 'Resgate não encontrado.' };
+}
+
+function cancelRedeemJob(id) {
+  const job = redeemJobs.get(String(id || ''));
+  if (!job) return { error: 'Resgate não encontrado.' };
+  if (job.status === 'running') job.cancelRequested = true;
+  return redeemJobSnapshot(job);
+}
 
 // Procura, em qualquer lugar da mensagem, um bloco { twitch: { bonus } } ou { kick: { bonus } }.
 function findPokeBonus(obj, depth = 0, out = {}) {
@@ -1106,8 +1636,9 @@ async function refreshTwitch() {
 }
 
 async function refreshChannel(slug) {
-  if (platformOf(slug) === 'twitch') return; // a Twitch é consultada em lote (refreshTwitch)
+  if (platformOf(slug) === 'twitch') return { points: (status.get(slug) || {}).points ?? null, pointsRefreshed: false }; // a Twitch é consultada em lote (refreshTwitch)
   const s = status.get(slug) || { watchedMs: 0 };
+  let pointsRefreshed = false;
   try {
     const { status: code, json } = await kickFetch(`/api/v2/channels/${slug}`);
     if (code !== 200 || !json) throw new Error(`HTTP ${code}`);
@@ -1145,13 +1676,27 @@ async function refreshChannel(slug) {
           if (watchers.has(slug)) s.lastGainAt = Date.now();
           addDaily(p - s.points);
         }
-        if (s.points != null && p < s.points) registerPurchases(slug, s.points - p);
+        if (s.points != null && p < s.points) {
+          const drop = s.points - p;
+          const pending = pendingAutoKickPurchases.get(slug);
+          if (pending && pending.expiresAt > Date.now() && drop + 25 >= pending.cost) {
+            addKnownPurchase(slug, pending.costPerHour, pending.hours, 'auto');
+            pendingAutoKickPurchases.delete(slug);
+            const unexplained = drop - pending.cost;
+            if (unexplained > 25) registerPurchases(slug, unexplained);
+          } else {
+            if (pending) pendingAutoKickPurchases.delete(slug);
+            registerPurchases(slug, drop);
+          }
+        }
         s.points = p;
+        pointsRefreshed = true;
         checkBonus(slug, s);
       }
     }
   } catch {}
   status.set(slug, s);
+  return { points: s.points ?? null, pointsRefreshed };
 }
 
 // Confere cada live oculta: aviso +18 (só a pessoa pode confirmar) e estado do player, para o
@@ -2092,6 +2637,9 @@ ipcMain.handle('bonus:set', (_e, platform, tipo, msLeft) => {
 });
 ipcMain.handle('pokeidle:show', async (_e, id, bounds) => { await showPokeIdle(id || POKE_MAIN, bounds); return snapshot(); });
 ipcMain.handle('pokeidle:hide', () => { hidePokeIdle(); return snapshot(); });
+ipcMain.handle('redeem:start', (_e, tipo, platform) => startRedeemJob(tipo, platform));
+ipcMain.handle('redeem:get', (_e, id) => getRedeemJob(id));
+ipcMain.handle('redeem:cancel', (_e, id) => cancelRedeemJob(id));
 // Abre o PokeIdle de todas as contas de uma vez (por trás) e mostra o da conta escolhida.
 // Liga/desliga a grade (abre o PokeIdle das contas que ainda não estavam abertas).
 ipcMain.handle('pokeidle:grid', async (_e, on, current, bounds) => {

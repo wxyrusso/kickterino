@@ -493,6 +493,7 @@ function applyState(s) {
   const prevLive = new Map(sameAccount ? state.channels.map((c) => [c.slug, c.live]) : []);
   if (sameAccount) celebrate(state, s);
   state = s;
+  if (!sameAccount && modalKind === 'redeem') closeModal();
   if (active && !state.channels.some((c) => c.slug === active)) active = null;
   renderAccountsBar();
   for (const ch of state.channels) {
@@ -710,9 +711,17 @@ function bonusMatrix(now) {
   const thead = el('thead'); thead.append(head); t.append(thead);
   const body = el('tbody');
   for (const platform of ['twitch', 'kick']) {
+    const label = platform === 'twitch' ? 'Twitch' : 'Kick';
+    const redeemRow = el('tr', `bm-redeem-row ${platform}`);
+    const redeemCell = el('td'); redeemCell.colSpan = accounts.length + 1;
+    const redeem = button(redeemButtonText(platform), 'poke-redeem poke-redeem-platform', () => openRedeemModal(platform));
+    redeem.dataset.platform = platform;
+    redeem.title = `Escolha o bônus para resgatar somente nos canais da ${label} desta conta.`;
+    redeem.disabled = !(state.channels || []).some((ch) => ch.platform === platform);
+    redeemCell.append(redeem); redeemRow.append(redeemCell); body.append(redeemRow);
     const sec = el('tr', `bm-sec ${platform}`);
     const td = el('td'); td.colSpan = accounts.length + 1;
-    td.append(platIcon(platform), el('b', null, platform === 'twitch' ? 'Twitch' : 'Kick'));
+    td.append(platIcon(platform), el('b', null, label));
     sec.append(td); body.append(sec);
     BONUS_ROWS.forEach(([name, ico, full], i) => {
       const tr = el('tr');
@@ -747,6 +756,7 @@ function openModal(kind, ...nodes) {
 }
 function closeModal() {
   if (modalKind === 'intro') window.kick.introDone().then(applyState);
+  if (modalKind === 'redeem') { redeemModalAccount = null; redeemModalPlatform = null; }
   modalKind = null;
   $('#modal').hidden = true;
   if (pokeMode) window.kick.showPokeIdle(pokeMode, chatRect());
@@ -754,6 +764,188 @@ function closeModal() {
 $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#modal').hidden) closeModal(); });
 const button = (text, cls, onclick) => { const b = el('button', cls, text); b.onclick = onclick; return b; };
+
+const REDEEM_CHOICES = [
+  { id: 'xp', icon: '⚡', short: 'XP', name: '+15% XP', cost: 300 },
+  { id: 'captura', icon: '🎯', short: 'Capture Boost', name: '+15% Capture Boost', cost: 500 },
+  { id: 'shiny', icon: '✨', short: 'Secret Lure', name: '+15% Secret Lure', cost: 1000 },
+];
+const redeemJobsByAccount = new Map();
+const redeemSelectionsByAccount = new Map();
+let redeemModalAccount = null;
+let redeemModalPlatform = null;
+let redeemPollTimer = null;
+
+const redeemJobKey = (account, platform) => `${account}:${platform}`;
+
+function redeemSelectionFor(account = currentAccount(), platform = 'kick') {
+  const key = redeemJobKey(account, platform);
+  if (redeemSelectionsByAccount.has(key)) return redeemSelectionsByAccount.get(key);
+  let saved = 'xp';
+  try {
+    const value = localStorage.getItem(`redeemBonus:${account}:${platform}`) || localStorage.getItem(`redeemBonus:${account}`);
+    if (REDEEM_CHOICES.some((choice) => choice.id === value)) saved = value;
+  } catch {}
+  redeemSelectionsByAccount.set(key, saved);
+  return saved;
+}
+
+function setRedeemSelection(account, platform, value) {
+  if (!REDEEM_CHOICES.some((choice) => choice.id === value)) return;
+  redeemSelectionsByAccount.set(redeemJobKey(account, platform), value);
+  try { localStorage.setItem(`redeemBonus:${account}:${platform}`, value); } catch {}
+}
+
+function redeemButtonText(platform) {
+  const entry = redeemJobsByAccount.get(redeemJobKey(currentAccount(), platform));
+  const label = platform === 'twitch' ? 'Twitch' : 'Kick';
+  return entry && entry.state && entry.state.status === 'running' ? `🎁 Acompanhar ${label}` : `🎁 Resgatar ${label}`;
+}
+
+function startRedeemPolling() {
+  if (redeemPollTimer) return;
+  redeemPollTimer = setInterval(async () => {
+    let currentRunning = false;
+    for (const entry of redeemJobsByAccount.values()) {
+      if (!entry.state || entry.state.status !== 'running') continue;
+      if (entry.account !== currentAccount()) continue;
+      currentRunning = true;
+      try {
+        const fresh = await window.kick.getPokeRedeem(entry.id);
+        if (fresh && !fresh.error) entry.state = fresh;
+        if (redeemModalAccount === entry.account && redeemModalPlatform === entry.platform && modalKind === 'redeem' && !$('#modal').hidden) {
+          renderRedeemProgress(entry.state, entry.account, entry.platform);
+        }
+      } catch {}
+    }
+    for (const button of document.querySelectorAll('#bonus-box .poke-redeem-platform')) {
+      button.textContent = redeemButtonText(button.dataset.platform);
+    }
+    if (!currentRunning) { clearInterval(redeemPollTimer); redeemPollTimer = null; }
+  }, 1200);
+}
+
+function openRedeemModal(platform) {
+  redeemModalAccount = currentAccount();
+  redeemModalPlatform = platform;
+  openModal('redeem', el('div'));
+  const entry = redeemJobsByAccount.get(redeemJobKey(redeemModalAccount, platform));
+  if (entry && entry.state && entry.state.status === 'running') {
+    startRedeemPolling();
+    renderRedeemProgress(entry.state, redeemModalAccount, platform);
+  } else if (entry && entry.state && ['done', 'cancelled', 'failed'].includes(entry.state.status)) {
+    renderRedeemProgress(entry.state, redeemModalAccount, platform);
+  } else {
+    renderRedeemPicker(platform);
+  }
+}
+
+function renderRedeemPicker(platform) {
+  const wrap = el('div', 'redeem-modal');
+  const account = (state.tk && state.tk.accounts || []).find((a) => a.id === currentAccount());
+  const platformName = platform === 'twitch' ? 'Twitch' : 'Kick';
+  const channels = (state.channels || []).filter((channel) => channel.platform === platform);
+  const known = channels.filter((c) => c.points != null).length;
+  wrap.append(el('h3', null, `🎁 Resgate automático · ${platformName}`),
+    el('p', null, `Escolha o bônus para os canais da ${platformName} na conta ${account ? account.label : 'selecionada'}. Em cada canal com pontos suficientes, o app resgata o maior pacote que o saldo pagar (na Twitch; na Kick, o de 1h) e repete enquanto sobrar saldo. Tudo roda por trás, sem abrir janelas na tela. A escolha fica salva por conta e plataforma.`));
+  const options = el('div', 'redeem-options');
+  const selectedType = redeemSelectionFor(currentAccount(), platform);
+  for (const choice of REDEEM_CHOICES) {
+    const card = button('', 'redeem-choice' + (selectedType === choice.id ? ' selected' : ''), () => {
+      setRedeemSelection(currentAccount(), platform, choice.id);
+      renderRedeemPicker(platform);
+    });
+    card.setAttribute('aria-pressed', selectedType === choice.id ? 'true' : 'false');
+    const copy = el('span', 'redeem-copy');
+    copy.append(el('b', null, choice.short), el('small', null, `${choice.name} · ${choice.cost.toLocaleString('pt-BR')} pontos por hora`));
+    card.append(el('span', 'redeem-icon', choice.icon), copy);
+    options.append(card);
+  }
+  wrap.append(options);
+  const authWarnings = [];
+  if (platform === 'kick' && !state.loggedIn) authWarnings.push('Kick desconectada: faça login nesta conta pelo botão “Login Kick”.');
+  if (platform === 'twitch' && !(state.twitch || {}).loggedIn) authWarnings.push('Twitch desconectada: faça login nesta conta pelo botão “Login Twitch”.');
+  const note = el('p', 'redeem-note' + (authWarnings.length ? ' redeem-auth-warning' : ''),
+    `${channels.length} canais da ${platformName} nesta conta · ${known} com saldo lido. O app abre somente os canais desta plataforma que passaram pelo filtro de saldo.${authWarnings.length ? ` ${authWarnings.join(' ')}` : ''}`);
+  wrap.append(note);
+  const selected = REDEEM_CHOICES.find((x) => x.id === selectedType) || REDEEM_CHOICES[0];
+  const actions = el('div', 'modal-actions');
+  actions.append(button('Cancelar', null, closeModal), button(`Resgatar ${selected.short} na ${platformName}`, 'primary', () => startRedeemForAll(platform)));
+  actions.lastChild.disabled = !channels.length;
+  wrap.append(actions);
+  $('#modal-card').replaceChildren(wrap);
+}
+
+async function startRedeemForAll(platform) {
+  const account = currentAccount();
+  const start = await window.kick.startPokeRedeem(redeemSelectionFor(account, platform), platform);
+  if (!start || start.error) {
+    toast((start && start.error) || 'Não foi possível iniciar o resgate.');
+    return;
+  }
+  redeemModalAccount = account;
+  redeemModalPlatform = platform;
+  redeemJobsByAccount.set(redeemJobKey(account, platform), { account, platform, id: start.id, state: start });
+  startRedeemPolling();
+  renderRedeemProgress(start, account, platform);
+}
+
+function renderRedeemProgress(job, account, platform) {
+  if (modalKind !== 'redeem' || redeemModalAccount !== account || redeemModalPlatform !== platform || $('#modal').hidden) return;
+  const wrap = el('div', 'redeem-modal');
+  const platformName = platform === 'twitch' ? 'Twitch' : 'Kick';
+  const choice = REDEEM_CHOICES.find((x) => x.id === job.type) || REDEEM_CHOICES[0];
+  wrap.append(el('h3', null, `🎁 ${choice.name} · ${platformName}`));
+  if (job.status === 'running') {
+    const current = job.current ? ` · ${job.current.label} (${job.current.platform === 'twitch' ? 'Twitch' : 'Kick'})` : '';
+    const phase = !job.current ? '' : job.current.phase === 'checking-points' ? ' · conferindo saldo antes de abrir'
+      : job.current.phase === 'redeeming' ? ` · resgate ${job.current.attempt}/${job.current.attempts}` : '';
+    wrap.append(el('p', null, `Canal ${Math.min(job.done + 1, job.total)} de ${job.total}${current}${phase}`));
+    const progress = el('progress', 'redeem-progress');
+    progress.max = Math.max(1, job.total); progress.value = job.done;
+    wrap.append(progress, el('p', 'redeem-note', job.cancelRequested ? 'Parando depois do canal atual…' : 'Canais com saldo insuficiente ou não confirmado são pulados sem abrir o chat.'));
+  } else {
+    const boughtChannels = job.results.filter((r) => r.status === 'redeemed').length;
+    const bought = job.results.reduce((sum, r) => sum + (r.status === 'redeemed' ? (r.hours || 1) : 0), 0);
+    const sent = job.results.filter((r) => r.status === 'submitted').length;
+    const skipped = job.results.filter((r) => r.status === 'skipped').length;
+    const failed = job.results.filter((r) => r.status === 'failed').length;
+    wrap.append(el('p', null, `${job.status === 'cancelled' ? 'Resgate interrompido.' : job.status === 'failed' ? 'O resgate parou por um erro.' : 'Verificação concluída.'} ${bought} resgate(s) confirmados em ${boughtChannels} canal(is) · ${sent} enviados sem confirmação · ${skipped} sem resgate · ${failed} falharam.`));
+  }
+  const list = el('div', 'redeem-results');
+  for (const r of job.results.slice(-12)) {
+    const icon = r.status === 'redeemed' ? '✓' : r.status === 'submitted' ? '…' : r.status === 'failed' ? '!' : '–';
+    const row = el('div', `redeem-result ${r.status}`);
+    row.append(el('b', null, `${icon} ${r.label || r.slug} · ${r.platform === 'twitch' ? 'Twitch' : 'Kick'}`), el('span', null, r.message || ''));
+    list.append(row);
+  }
+  if (job.results.length) wrap.append(list);
+  const actions = el('div', 'modal-actions');
+  if (job.status === 'running') {
+    actions.append(button(job.cancelRequested ? 'Parando…' : 'Parar após este canal', null, async () => {
+      const fresh = await window.kick.cancelPokeRedeem(job.id);
+      if (fresh && !fresh.error) {
+        const entry = redeemJobsByAccount.get(redeemJobKey(account, platform));
+        if (entry) entry.state = fresh;
+        renderRedeemProgress(fresh, account, platform);
+      }
+    }));
+    actions.append(button('Fechar (o resgate continua)', null, closeModal));
+  } else {
+    actions.append(button('Fechar', 'primary', () => {
+      redeemJobsByAccount.delete(redeemJobKey(account, platform));
+      closeModal();
+      renderBonusBox();
+    }));
+    actions.append(button('Escolher outro bônus', null, () => {
+      redeemJobsByAccount.delete(redeemJobKey(account, platform));
+      renderRedeemPicker(platform);
+      renderBonusBox();
+    }));
+  }
+  wrap.append(actions);
+  $('#modal-card').replaceChildren(wrap);
+}
 
 // Antes de dormir: canais com pontos para o bônus escolhido; as lojas abrem uma de cada vez.
 const sleepPicked = new Set();
@@ -847,7 +1039,7 @@ function showIntro(kind) {
       ['1. Faça login', 'Clique em Login Kick e entre com sua conta (e-mail, Google, Apple ou Discord).'],
       ['2. Escolha seu bônus', 'Em Bônus, deixe Automático ou escolha XP, Capture Boost ou Secret Lure.'],
       ['3. Acompanhe no painel', 'Em Pontos ▸ você vê o saldo de cada canal, a previsão do próximo bônus e quanto tempo falta no seu bônus ativo.'],
-      ['4. Compre na loja', 'O ícone de pontos ao lado do chat abre a loja do canal. A compra é sempre feita por você.'],
+      ['4. Resgate um bônus', 'Em 🎁 Resgatar (na tabela de bônus), escolha XP, Capture Boost ou Secret Lure. O app resgata em todos os canais desta conta que tiverem pontos.'],
     ];
     for (const [t, d] of steps) { const s = el('div', 'intro-step'); s.append(el('b', null, t), el('span', null, d)); wrap.append(s); }
   } else {

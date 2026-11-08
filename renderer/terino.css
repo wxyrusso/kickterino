@@ -119,6 +119,10 @@ body.poke-focus #accounts-bar { display: none !important; }
 .bonus-matrix tr.bm-sec td { padding: 8px 2px 4px; font-size: 12px; border-bottom: 1px solid var(--border); }
 .bonus-matrix tr.bm-sec.twitch td { color: #bf94ff; }
 .bonus-matrix tr.bm-sec.kick td { color: #53fc18; }
+.bonus-matrix tr.bm-redeem-row td { padding: 4px 0 0; }
+.poke-redeem-platform { margin: 0; padding: 6px 8px; }
+.bonus-matrix .poke-redeem-platform[data-platform="twitch"] { border-color: rgba(145, 70, 255, .55); color: #bf94ff; }
+.bonus-matrix .poke-redeem-platform[data-platform="kick"] { border-color: rgba(83, 252, 24, .45); color: #53fc18; }
 .bonus-matrix td.bm-name { padding: 5px 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bonus-matrix td.bm-cell { text-align: center; padding: 5px 2px; color: var(--muted); cursor: pointer; border-left: 1px solid rgba(255, 255, 255, .06); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .bonus-matrix td.bm-cell.cur { background: rgba(var(--accent-rgb), .06); }
