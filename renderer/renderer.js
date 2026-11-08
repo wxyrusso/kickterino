@@ -259,6 +259,80 @@ function renderFocusBar() {
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'F11') { e.preventDefault(); setFocusMode(!focusMode); } });
 
+// ---------- Contas do PokeIdle (painel) ----------
+// Um cartão por conta: o que o app leu do jogo (nick, nível, XP/h, ouro), o estado (vigia) e o modo
+// de tela do jogo. Embaixo, os ajustes de economia e do vigia.
+const POKE_MODE_LABELS = [['cena', 'Cena'], ['otimizado', 'Otimizado'], ['economia', 'Economia'], ['ultra', 'ULTRA']];
+const fmtK = (n) => (n == null ? '—' : n >= 1e6 ? `${(n / 1e6).toFixed(1).replace('.', ',')} mi` : n >= 1e3 ? `${Math.round(n / 1e3)} mil` : String(n));
+let pokeSettingsOpen = false;
+
+function renderPokeBox() {
+  const box = $('#poke-box');
+  if (!box) return;
+  if (box.contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName)) return; // editando
+  const p = state.pokeIdle || {};
+  const contas = p.contas || [];
+  const set = p.settings || { vigia: {} };
+  box.replaceChildren();
+  for (const c of contas) {
+    const card = el('div', 'pk-card' + (c.problem ? ' bad' : '') + (c.open ? '' : ' closed'));
+    const top = el('div', 'pk-top');
+    const st = !c.open ? ['fechada', 'off'] : c.problem === 'deslogou' ? ['deslogou', 'bad'] : c.problem === 'parada' ? ['sem XP', 'bad']
+      : c.logged === false ? ['sem login', 'warn'] : c.logged ? ['caçando', 'ok'] : ['abrindo…', 'off'];
+    top.append(el('b', null, c.label), el('span', `pk-chip ${st[1]}`, st[0]));
+    const sel = el('select', 'pk-mode');
+    for (const [v, t] of POKE_MODE_LABELS) { const o = el('option', null, t); o.value = v; sel.append(o); }
+    sel.value = c.mode;
+    sel.title = 'Modo de tela do jogo para esta conta (quando estiver na tela). ULTRA gasta bem menos memória e CPU.';
+    sel.onchange = async () => applyState(await window.kick.pokeSetMode(c.id, sel.value));
+    top.append(sel);
+    card.append(top);
+    if (c.open) {
+      const linha = [c.nick, c.level ? `Nv ${c.level}` : null, c.xpH != null ? `${fmtK(c.xpH)} XP/h` : null, c.gold ? `💰 ${c.gold}` : null].filter(Boolean).join(' · ');
+      card.append(el('div', 'pk-info', linha || 'Lendo o jogo…'));
+      if (c.modeNow && c.modeNow !== c.mode) card.append(el('div', 'pk-note', `Agora em ${POKE_MODE_LABELS.find((m) => m[0] === c.modeNow)?.[1] || c.modeNow} (fora da tela)`));
+    } else {
+      const open = el('button', 'pk-open', 'Abrir');
+      open.onclick = async () => { await switchAccount(c.id).catch(() => {}); showPoke(c.id); };
+      card.append(open);
+    }
+    card.onclick = (e) => { if (e.target === card || e.target.classList.contains('pk-info')) { switchAccount(c.id).then(() => showPoke(c.id)); } };
+    box.append(card);
+  }
+  // Ajustes
+  const det = el('details', 'pk-settings');
+  if (pokeSettingsOpen) det.open = true;
+  det.ontoggle = () => { pokeSettingsOpen = det.open; };
+  det.append(el('summary', null, 'Economia e vigia'));
+  const row = (label, input, hint) => { const r = el('label', 'pk-row'); r.append(input, el('span', null, label)); if (hint) r.title = hint; return r; };
+  const chk = (on, fn) => { const i = el('input'); i.type = 'checkbox'; i.checked = !!on; i.onchange = () => fn(i.checked); return i; };
+  const save = async (patch) => applyState(await window.kick.pokeSettings(patch));
+  det.append(row('ULTRA nas contas fora da tela', chk(set.autoUltra, (v) => save({ autoUltra: v })),
+    `Depois de ${set.ultraDelayMin || 3} min fora da tela, a conta vai para o ULTRA (bem menos memória e CPU). Ao voltar para a tela, volta ao modo escolhido.`));
+  const opt = el('select');
+  for (const [v, t] of [[0, 'Nunca'], [60, 'A cada 1 h'], [120, 'A cada 2 h'], [240, 'A cada 4 h'], [360, 'A cada 6 h']]) { const o = el('option', null, t); o.value = v; opt.append(o); }
+  opt.value = String(set.optimizeMin || 0);
+  opt.onchange = () => save({ optimizeMin: Number(opt.value) });
+  det.append(row('Recarregar as contas fora da tela (libera memória)', opt, 'O jogo vai acumulando memória com o tempo; recarregar a página resolve.'));
+  const vig = set.vigia || {};
+  det.append(row('Vigia: avisar quando uma conta cair, deslogar, travar ou parar de ganhar XP', chk(vig.on, (v) => save({ vigiaOn: v }))));
+  const par = el('select');
+  for (const v of [5, 10, 15, 30]) { const o = el('option', null, `${v} min`); o.value = v; par.append(o); }
+  par.value = String(vig.paradaMin || 10);
+  par.onchange = () => save({ paradaMin: Number(par.value) });
+  det.append(row('Sem ganhar XP por', par));
+  const ntfy = el('input'); ntfy.placeholder = 'tópico do ntfy (opcional)'; ntfy.value = vig.ntfy || '';
+  ntfy.onchange = () => save({ ntfy: ntfy.value });
+  det.append(row('Aviso no celular (app ntfy, assine o mesmo tópico)', ntfy, 'Instale o app ntfy no celular e assine um tópico com nome difícil de adivinhar. Os avisos chegam por ele.'));
+  const disc = el('input'); disc.placeholder = 'webhook do Discord (opcional)'; disc.value = vig.discord || '';
+  disc.onchange = () => save({ discord: disc.value });
+  det.append(row('Aviso no Discord (webhook de um canal seu)', disc));
+  const test = el('button', 'pk-test', 'Testar aviso');
+  test.onclick = async () => { await window.kick.pokeTestAlert(); toast('Aviso de teste enviado.'); };
+  det.append(test);
+  box.append(det);
+}
+
 // ---------- Barra de contas ----------
 // Principal e alts lado a lado no topo. Escolher uma conta faz a janela inteira (canais, painel,
 // logins, bônus e o PokeIdle) mostrar aquela conta; todas continuam farmando ao mesmo tempo.
@@ -478,6 +552,7 @@ function renderPanel() {
   }
   renderLimitTest();
   renderBonusBox();
+  renderPokeBox();
   $('#sleep-box').hidden = !state.sleepMode;
   $('#summary').textContent = !state.loggedIn && !(state.twitch || {}).loggedIn ? `${live} ao vivo · Faça login para farmar pontos` : `${live} ao vivo · ${watching} assistindo`
     + (queued ? (state.rotation ? ` · ${queued} na fila (foco no próximo bônus)` : ` · ${queued} sem vaga`) : '')

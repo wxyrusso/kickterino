@@ -1296,6 +1296,8 @@ function findPokeBonus(obj, depth = 0, out = {}) {
 // outra), como num navegador multiconta. Trocar para um canal só esconde o jogo, que continua
 // rodando; o ✕ da aba encerra a sessão daquela conta no app.
 const POKE_MAIN = 'principal';
+// Regra do PokeIdle: no máximo 4 contas por pessoa (identificadas pelo IP). O app não deixa passar disso.
+const POKE_MAX_ACCOUNTS = 4;
 const POKEIDLE_FIX_CSS = `
   #mk-corpo .mk-grade > .mk-card { min-height: max-content; }
   #mk-corpo .mk-grade { grid-auto-rows: max-content; grid-template-rows: none; }
@@ -1359,7 +1361,10 @@ async function ensurePokeView(id) {
   view.setBackgroundColor('#1b1b1b');
   mainWin.contentView.addChildView(view);
   attachPokeReader(view.webContents, id);
-  view.webContents.on('render-process-gone', () => closePokeIdle(id));
+  // Página do jogo que caiu: abre de novo (e o vigia avisa).
+  view.webContents.on('render-process-gone', () => setImmediate(() => {
+    if (pokeViews.get(id) === view && !app.isQuitting) reopenPokeAccount(id, 'caiu').catch(() => {}); // fechada de propósito: não reabre
+  }));
   // Na área do app o Market espremia os cartões para caber na altura: o nome e o botão Comprar
   // ficavam cortados embaixo. Os cartões ficam com a altura deles e a grade rola.
   view.webContents.on('dom-ready', () => { view.webContents.insertCSS(POKEIDLE_FIX_CSS).catch(() => {}); });
@@ -1407,6 +1412,9 @@ async function showPokeIdle(id = POKE_MAIN, bounds) {
   applyPokeBounds();
   view.setVisible(true);
   view.webContents.focus();
+  // Voltou para a tela: sai do ULTRA do fundo e volta ao modo escolhido.
+  pokeHiddenSince.delete(id);
+  applyPokeMode(id).catch(() => {});
 }
 
 function hidePokeIdle() {
@@ -1434,8 +1442,186 @@ function pokeIdleSnapshot() {
     accounts: pokeAccountIds().map((id) => ({ id, label: pokeLabel(id), open: pokeIsOpen(id), bonus: id === POKE_MAIN ? null : (others[id] || null) })),
     readAt: config.pokeReadAt || null,
     source: { twitch: pokeBase('twitch').source || null, kick: pokeBase('kick').source || null },
+    contas: pokeAccountsSummary(), settings: pokeSettings(), max: POKE_MAX_ACCOUNTS,
   };
 }
+
+// ---------- Contas do PokeIdle: modo, leitura, vigia e reabrir ----------
+// A cada minuto o app passa pelas contas do PokeIdle abertas no app:
+// - lê do jogo nick, nível, ouro e o placar da sessão de caça (o mesmo que o jogo grava);
+// - ajusta o modo de tela do próprio jogo (Cena, Otimizado, Economia, ULTRA). As contas que estão
+//   fora da tela há alguns minutos vão para o ULTRA, se a pessoa ligar isso (bem menos memória e CPU);
+// - vigia: avisa (no PC e, se configurado, no celular pelo ntfy ou no Discord) quando a conta
+//   deslogou, travou ou está logada sem ganhar XP;
+// - reabre sozinha a página que travou e, se pedido, recarrega as contas de tempos em tempos.
+const POKE_MODES = {
+  cena: { 'cfg-otimizado': '0', 'cfg-economia': '0', 'cfg-ultra': '0' },
+  otimizado: { 'cfg-otimizado': '1', 'cfg-economia': '0', 'cfg-ultra': '0' },
+  economia: { 'cfg-otimizado': '0', 'cfg-economia': '1', 'cfg-ultra': '0' },
+  ultra: { 'cfg-otimizado': '0', 'cfg-economia': '0', 'cfg-ultra': '1' },
+};
+const POKE_MODE_NAMES = { cena: 'Cena', otimizado: 'Otimizado', economia: 'Economia', ultra: 'ULTRA' };
+const POKE_WATCH_MS = 60 * 1000;
+const pokeInfo = new Map();        // id -> última leitura { at, logged, nick, level, gold, xpH, sessXp, mode, problem }
+const pokeHiddenSince = new Map(); // id -> desde quando a conta está fora da tela
+const pokeXpSince = new Map();     // id -> { xp, at }: último momento em que o XP da sessão subiu
+const pokeAlerted = new Map();     // id -> problema já avisado (um aviso por problema, até resolver)
+const pokeLastReload = new Map();  // id -> última vez que a conta foi recarregada (otimizar)
+const pokeFails = new Map();       // id -> leituras seguidas sem resposta
+
+const pokeSettings = () => ({
+  autoUltra: !!config.pokeAutoUltra,
+  ultraDelayMin: config.pokeUltraDelayMin || 3,
+  optimizeMin: config.pokeOptimizeMin || 0,
+  vigia: { on: config.pokeVigia !== false, paradaMin: config.pokeParadaMin || 10, ntfy: config.pokeNtfy || '', discord: config.pokeDiscord || '' },
+});
+const pokeChosenMode = (id) => ((config.pokeModes || {})[id] in POKE_MODES ? config.pokeModes[id] : 'cena');
+const pokeOnScreen = (id) => pokeIsOpen(id) && pokeViews.get(id).getVisible();
+
+function pokeWantedMode(id) {
+  if (pokeOnScreen(id)) return pokeChosenMode(id);
+  if (!config.pokeAutoUltra) return pokeChosenMode(id);
+  const since = pokeHiddenSince.get(id);
+  return since && Date.now() - since >= (config.pokeUltraDelayMin || 3) * 60 * 1000 ? 'ultra' : pokeChosenMode(id);
+}
+
+// Grava as preferências do jogo e recarrega a página só quando elas mudaram.
+async function applyPokeMode(id) {
+  if (!pokeIsOpen(id)) return;
+  const want = POKE_MODES[pokeWantedMode(id)];
+  const wc = pokeViews.get(id).webContents;
+  const changed = await withTimeout(wc.executeJavaScript(`(() => { const p = ${JSON.stringify(want)}; let c = false;
+    for (const k in p) if (localStorage.getItem(k) !== p[k]) { localStorage.setItem(k, p[k]); c = true; } return c; })()`), 10 * 1000).catch(() => false);
+  if (changed) { pokeLastReload.set(id, Date.now()); wc.reload(); }
+}
+
+const POKE_READ_SCRIPT = `(() => {
+  const q = (s) => document.querySelector(s);
+  const txt = (s) => { const e = q(s); const t = e ? e.textContent.trim().replace(/\\s+/g, ' ') : ''; return t && t !== '—' ? t : null; };
+  let token = false; try { const x = JSON.parse(localStorage.getItem('sessao') || 'null'); token = !!(x && x.token); } catch {}
+  const app = q('#app');
+  const nick = txt('#tr-nick');
+  let sess = null;
+  try { const o = nick && JSON.parse(localStorage.getItem('sessao-hunt:' + nick.toLowerCase()) || 'null'); if (o && o.ms > 0) sess = { ms: o.ms, xp: +o.xpTreinador || 0, gold: +o.gold || 0, abates: +o.abates || 0, capturas: +o.capturas || 0 }; } catch {}
+  return {
+    logged: (!!app && !app.classList.contains('hidden')) || token,
+    loginScreen: !token && !!q('input[type="password"]'),
+    nick, level: txt('#tr-level'), gold: txt('#tr-gold'), xp: txt('#tr-xp-txt'), sess,
+    mode: document.documentElement.classList.contains('modo-ultra') ? 'ultra'
+      : localStorage.getItem('cfg-economia') === '1' ? 'economia' : localStorage.getItem('cfg-otimizado') === '1' ? 'otimizado' : 'cena',
+  };
+})()`;
+
+async function pokeAlert(id, problem, text) {
+  if (pokeAlerted.get(id) === problem) return; // já avisado; volta a avisar quando resolver e acontecer de novo
+  pokeAlerted.set(id, problem);
+  const vig = pokeSettings().vigia;
+  if (!vig.on) return;
+  const title = `PokeIdle — ${pokeLabel(id)}`;
+  notify(title, text, () => { showMain(); });
+  if (vig.ntfy) net.fetch(`https://ntfy.sh/${encodeURIComponent(vig.ntfy)}`, { method: 'POST', body: `${title}: ${text}`, headers: { Title: 'TK MultiStream' } }).catch(() => {});
+  if (/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(vig.discord)) {
+    net.fetch(vig.discord, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: `**${title}**: ${text}` }) }).catch(() => {});
+  }
+}
+const pokeResolved = (id) => pokeAlerted.delete(id);
+
+// Página que não responde (travou): fecha e abre de novo, no mesmo lugar.
+async function reopenPokeAccount(id, motivo) {
+  const wasOnScreen = pokeOnScreen(id);
+  closePokeIdle(id);
+  await ensurePokeView(id).catch(() => {});
+  pokeFails.delete(id);
+  pokeLastReload.set(id, Date.now());
+  if (wasOnScreen && pokeBounds) await showPokeIdle(id, pokeBounds).catch(() => {});
+  else applyPokeBounds();
+  pokeAlert(id, 'reaberta', `A página da conta ${motivo}; o app abriu de novo.`);
+}
+
+async function watchPokeAccount(id) {
+  if (!pokeIsOpen(id)) { pokeInfo.delete(id); pokeHiddenSince.delete(id); return; }
+  const now = Date.now();
+  if (pokeOnScreen(id)) pokeHiddenSince.delete(id); else if (!pokeHiddenSince.has(id)) pokeHiddenSince.set(id, now);
+  const wc = pokeViews.get(id).webContents;
+  const r = await withTimeout(wc.executeJavaScript(POKE_READ_SCRIPT), 15 * 1000).catch(() => null);
+  if (!r) {
+    const n = (pokeFails.get(id) || 0) + 1;
+    pokeFails.set(id, n);
+    if (n >= 2 && !wc.isLoading()) return reopenPokeAccount(id, 'travou (não respondia)');
+    return;
+  }
+  pokeFails.delete(id);
+  const prev = pokeInfo.get(id) || {};
+  const info = { at: now, logged: !!r.logged, nick: r.logged ? (r.nick || prev.nick || null) : null, level: r.logged ? (r.level || prev.level || null) : null, gold: r.logged ? (r.gold || prev.gold || null) : null,
+    mode: r.mode, xpH: r.sess && r.sess.ms > 60000 ? Math.round(r.sess.xp / r.sess.ms * 3600e3) : null, sessXp: r.sess ? r.sess.xp : null,
+    abates: r.sess ? r.sess.abates : null, capturas: r.sess ? r.sess.capturas : null, problem: null };
+  // XP parado: o placar da sessão não sobe há X minutos (com a conta logada).
+  if (info.sessXp != null) {
+    const last = pokeXpSince.get(id);
+    if (!last || info.sessXp !== last.xp) pokeXpSince.set(id, { xp: info.sessXp, at: now });
+  }
+  const parada = pokeXpSince.get(id);
+  const paradaMin = pokeSettings().vigia.paradaMin;
+  if (prev.logged && !info.logged) info.problem = 'deslogou';
+  else if (info.logged && parada && now - parada.at >= paradaMin * 60 * 1000) info.problem = 'parada';
+  pokeInfo.set(id, info);
+  if (info.problem === 'deslogou') pokeAlert(id, 'deslogou', 'A conta saiu do jogo (deslogou ou caiu). Abra o PokeIdle dela e entre de novo.');
+  else if (info.problem === 'parada') pokeAlert(id, 'parada', `Logada, mas sem ganhar XP há ${paradaMin} min. Confira se está numa hunt.`);
+  else pokeResolved(id);
+  await applyPokeMode(id);
+  // Otimizar: recarrega a conta de tempos em tempos (só fora da tela), para liberar memória.
+  const every = (config.pokeOptimizeMin || 0) * 60 * 1000;
+  if (every && !pokeOnScreen(id) && now - (pokeLastReload.get(id) || now - every) >= every && info.logged) {
+    pokeLastReload.set(id, now);
+    wc.reload();
+  }
+}
+
+let pokeWatching = false;
+async function watchPokeAccounts() {
+  if (pokeWatching || ACCOUNT) return;
+  pokeWatching = true;
+  try { for (const id of pokeAccountIds()) await watchPokeAccount(id).catch(() => {}); } finally { pokeWatching = false; }
+  send('status', snapshot());
+}
+
+function pokeAccountsSummary() {
+  return pokeAccountIds().map((id) => {
+    const i = pokeInfo.get(id) || {};
+    return { id, label: pokeLabel(id), open: pokeIsOpen(id), mode: pokeChosenMode(id), modeNow: i.mode || null,
+      nick: i.nick || null, level: i.level || null, gold: i.gold || null, xpH: i.xpH, abates: i.abates, capturas: i.capturas,
+      logged: i.logged ?? null, problem: i.problem || null, readAt: i.at || null };
+  });
+}
+
+ipcMain.handle('poke:setMode', async (_e, id, mode) => {
+  if (pokeAccountIds().includes(id) && POKE_MODES[mode]) {
+    config.pokeModes = { ...(config.pokeModes || {}), [id]: mode };
+    saveConfig();
+    await applyPokeMode(id);
+  }
+  return snapshot();
+});
+ipcMain.handle('poke:settings', (_e, patch = {}) => {
+  if ('autoUltra' in patch) config.pokeAutoUltra = !!patch.autoUltra;
+  if ('optimizeMin' in patch) config.pokeOptimizeMin = [0, 60, 120, 240, 360].includes(Number(patch.optimizeMin)) ? Number(patch.optimizeMin) : 0;
+  if ('vigiaOn' in patch) config.pokeVigia = !!patch.vigiaOn;
+  if ('paradaMin' in patch) config.pokeParadaMin = [5, 10, 15, 30].includes(Number(patch.paradaMin)) ? Number(patch.paradaMin) : 10;
+  if ('ntfy' in patch) config.pokeNtfy = String(patch.ntfy || '').trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+  if ('discord' in patch) { const d = String(patch.discord || '').trim(); config.pokeDiscord = /^https:\/\/(discord|discordapp)\.com\/api\/webhooks\/[\w/-]+$/.test(d) ? d : ''; }
+  saveConfig();
+  for (const id of pokeAccountIds()) applyPokeMode(id).catch(() => {});
+  return snapshot();
+});
+ipcMain.handle('poke:testAlert', () => {
+  pokeAlerted.delete('teste');
+  const saved = config.pokeVigia;
+  config.pokeVigia = true;
+  pokeAlert('teste', 'teste', 'Teste do vigia: os avisos estão chegando.');
+  config.pokeVigia = saved;
+  pokeAlerted.delete('teste');
+  return true;
+});
 
 // ---------- Extensões do Chrome no PokeIdle ----------
 // Extensões que a pessoa já usa no Chrome para o PokeIdle rodam também no jogo aberto no app.
@@ -2388,7 +2574,7 @@ const altFull = new Map();  // id -> último estado completo da alt (para respon
 // Comandos que são sempre da principal (o PokeIdle e as contas moram na janela dela).
 const LOCAL_CHANNELS = new Set([
   'tk:switch', 'tk:add', 'tk:remove', 'pokeidle:openAll', 'pokeidle:grid', 'pokeidle:show', 'pokeidle:hide', 'pokeidle:close', 'pokeidle:add',
-  'pokeidle:remove', 'cockpit:open', 'report:save', 'accounts:list', 'accounts:open', 'accounts:create', 'app:quit',
+  'pokeidle:remove', 'cockpit:open', 'report:save', 'poke:setMode', 'poke:settings', 'poke:testAlert', 'accounts:list', 'accounts:open', 'accounts:create', 'app:quit',
 ]);
 
 // Fim de cada bônus (XP, Capture, Lure) por plataforma, para a tabela com todas as contas.
@@ -2556,6 +2742,7 @@ ipcMain.handle('tk:switch', (_e, id) => switchAccount(id));
 ipcMain.handle('tk:add', async (_e, name) => {
   const id = String(name || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '').slice(0, 20);
   if (!id || id === POKE_MAIN) return { ...snapshotForUi(), error: 'Use só letras, números, - ou _ (até 20).' };
+  if (!pokeAccountIds().includes(id) && pokeAccountIds().length >= POKE_MAX_ACCOUNTS) return { ...snapshot(), error: `O PokeIdle permite no máximo ${POKE_MAX_ACCOUNTS} contas por pessoa (a principal e mais ${POKE_MAX_ACCOUNTS - 1}). Tire uma conta antes de criar outra.` };
   if (!pokeAccountIds().includes(id)) { config.pokeAccounts = [...(config.pokeAccounts || []), id]; saveConfig(); }
   const res = await switchAccount(id);
   return { ...res, added: id };
@@ -2660,6 +2847,7 @@ ipcMain.handle('pokeidle:close', (_e, id) => { closePokeIdle(id || POKE_MAIN); r
 ipcMain.handle('pokeidle:add', async (_e, name, bounds) => {
   const id = String(name || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '').slice(0, 20);
   if (!id || id === POKE_MAIN) return { ...snapshot(), error: 'Use só letras, números, - ou _ (até 20).' };
+  if (!pokeAccountIds().includes(id) && pokeAccountIds().length >= POKE_MAX_ACCOUNTS) return { ...snapshot(), error: `O PokeIdle permite no máximo ${POKE_MAX_ACCOUNTS} contas por pessoa (a principal e mais ${POKE_MAX_ACCOUNTS - 1}). Tire uma conta antes de criar outra.` };
   if (!pokeAccountIds().includes(id)) { config.pokeAccounts = [...(config.pokeAccounts || []), id]; saveConfig(); }
   await showPokeIdle(id, bounds);
   return { ...snapshot(), added: id };
@@ -2914,6 +3102,7 @@ app.whenReady().then(() => {
   apiReady.then(poll).then(() => {
     if (process.env.KICKTERINO_LIMIT_AUTOSTART) { startLimitTest(); reconcileWatchers(); }
   });
+  if (!ACCOUNT) setInterval(watchPokeAccounts, POKE_WATCH_MS); // contas do PokeIdle: modo, leitura e vigia
   scheduleTwitchSweep(90 * 1000); // primeira passada pelos saldos da Twitch logo depois de abrir
   setInterval(poll, POLL_MS);
   setInterval(() => send('status', snapshot()), 15 * 1000);
