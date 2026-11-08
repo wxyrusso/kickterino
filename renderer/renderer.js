@@ -333,6 +333,82 @@ function renderPokeBox() {
   box.append(det);
 }
 
+// ---------- 🧰 Extras: overlay do OBS, painel no celular e backups ----------
+async function renderExtrasModal(message = '') {
+  const info = await window.kick.extrasInfo();
+  if (!info) { toast('Os extras ainda estão iniciando.'); return; }
+  const wrap = el('div', 'extras-modal');
+  wrap.append(el('h3', null, '🧰 Extras'));
+  const copyRow = (url) => {
+    const r = el('div', 'ex-url');
+    const i = el('input'); i.readOnly = true; i.value = url || '—';
+    const b = button('Copiar', null, async () => { await window.kick.extrasCopy(url); toast('Link copiado.'); });
+    b.disabled = !url;
+    r.append(i, b);
+    return r;
+  };
+  const toggle = (label, on, fn) => {
+    const l = el('label', 'toggle ex-toggle');
+    const c = el('input'); c.type = 'checkbox'; c.checked = !!on;
+    c.onchange = async () => { await fn(c.checked); renderExtrasModal(); };
+    l.append(c, ` ${label}`);
+    return l;
+  };
+
+  const ov = el('section', 'ex-sec');
+  ov.append(el('h4', null, '🎥 Overlay para o OBS'),
+    el('p', null, 'Um card com o nick, o nível, o XP/h e o tempo dos bônus da Twitch e da Kick da conta na tela. No OBS: Fontes → + → Navegador, cole o link, largura 420 e altura 160. O fundo é transparente.'),
+    toggle('Ligar o overlay', info.overlayOn, (v) => window.kick.extrasSet({ overlayOn: v })));
+  if (info.overlayOn) {
+    ov.append(copyRow(info.overlayUrl),
+      el('p', 'ex-note', 'Para fixar uma conta no overlay, acrescente ?conta=NOME ao link (ex.: …/overlay?conta=alt-1). Sem isso, mostra a conta escolhida na barra.'));
+  }
+  wrap.append(ov);
+
+  const cel = el('section', 'ex-sec');
+  cel.append(el('h4', null, '📱 Painel no celular'),
+    el('p', null, 'Abra o link no navegador do celular, ligado ao mesmo Wi-Fi do PC: todas as contas, o estado de cada uma, os bônus e o farm. É só para olhar (nada muda pelo celular), e o link tem uma chave só sua: não compartilhe.'),
+    toggle('Ligar o painel no celular', info.mobileOn, (v) => window.kick.extrasSet({ mobileOn: v })));
+  if (info.mobileOn) {
+    cel.append(info.mobileUrl ? copyRow(info.mobileUrl) : el('p', 'ex-note', 'Não encontrei o PC na rede (sem Wi-Fi ou cabo?).'),
+      el('p', 'ex-note', 'Na primeira vez o Windows pode perguntar se o app pode usar a rede: permita em "Redes privadas".'));
+  }
+  wrap.append(cel);
+
+  const bk = el('section', 'ex-sec');
+  bk.append(el('h4', null, '💾 Backups'),
+    el('p', null, 'Uma cópia das configurações de todas as contas (canais, bônus, preferências) é feita sozinha uma vez por dia, na pasta Documentos › TK MultiStream › backups. Os logins não entram no backup.'));
+  const bar = el('div', 'ex-actions');
+  bar.append(button('Fazer backup agora', 'primary', async () => {
+    const r = await window.kick.extrasBackup();
+    renderExtrasModal(r.error ? `Erro: ${r.error}` : `Backup feito (${r.files} arquivo(s)).`);
+  }), button('Abrir a pasta', null, () => window.kick.extrasOpenBackups()));
+  bk.append(bar);
+  const list = el('div', 'ex-backups');
+  for (const name of info.backups || []) {
+    const row = el('div', 'ex-backup');
+    const [d, h] = name.split('_');
+    row.append(el('span', null, `${d.split('-').reverse().join('/')} ${h.slice(0, 2)}:${h.slice(2)}`));
+    const rb = button('Restaurar', null, async () => {
+      if (!rb.classList.contains('armed')) { rb.classList.add('armed'); rb.textContent = 'Restaurar e reiniciar?'; return; }
+      const r = await window.kick.extrasRestore(name);
+      if (r.error) renderExtrasModal(`Erro: ${r.error}`); else toast('Backup restaurado. O app vai reiniciar.');
+    });
+    row.append(rb);
+    list.append(row);
+  }
+  if (!(info.backups || []).length) list.append(el('p', 'ex-note', 'Nenhum backup ainda.'));
+  bk.append(list);
+  wrap.append(bk);
+
+  if (message) wrap.append(el('p', 'ex-msg', message));
+  const actions = el('div', 'modal-actions');
+  actions.append(button('Fechar', null, closeModal));
+  wrap.append(actions);
+  if (modalKind === 'extras') $('#modal-card').replaceChildren(wrap);
+}
+$('#btn-extras').onclick = () => { openModal('extras', el('div')); renderExtrasModal(); };
+
 // ---------- Barra de contas ----------
 // Principal e alts lado a lado no topo. Escolher uma conta faz a janela inteira (canais, painel,
 // logins, bônus e o PokeIdle) mostrar aquela conta; todas continuam farmando ao mesmo tempo.

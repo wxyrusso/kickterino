@@ -3,7 +3,7 @@
 // uma janela oculta "api" em kick.com para consultar status/pontos, e uma janela
 // oculta e muda por canal AO VIVO tocando o player real — é isso que conta como "assistindo".
 const {
-  app, BrowserWindow, dialog, ipcMain, session, shell, Tray, Menu, Notification, nativeImage, powerSaveBlocker, powerMonitor, net, webContents, WebContentsView,
+  app, BrowserWindow, dialog, ipcMain, session, shell, clipboard, Tray, Menu, Notification, nativeImage, powerSaveBlocker, powerMonitor, net, webContents, WebContentsView,
 } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
@@ -2574,7 +2574,7 @@ const altFull = new Map();  // id -> último estado completo da alt (para respon
 // Comandos que são sempre da principal (o PokeIdle e as contas moram na janela dela).
 const LOCAL_CHANNELS = new Set([
   'tk:switch', 'tk:add', 'tk:remove', 'pokeidle:openAll', 'pokeidle:grid', 'pokeidle:show', 'pokeidle:hide', 'pokeidle:close', 'pokeidle:add',
-  'pokeidle:remove', 'cockpit:open', 'report:save', 'poke:setMode', 'poke:settings', 'poke:testAlert', 'accounts:list', 'accounts:open', 'accounts:create', 'app:quit',
+  'pokeidle:remove', 'cockpit:open', 'report:save', 'poke:setMode', 'poke:settings', 'poke:testAlert', 'extras:info', 'extras:set', 'extras:backup', 'extras:restore', 'extras:openBackups', 'extras:copy', 'accounts:list', 'accounts:open', 'accounts:create', 'app:quit',
 ]);
 
 // Fim de cada bônus (XP, Capture, Lure) por plataforma, para a tabela com todas as contas.
@@ -2768,6 +2768,48 @@ function quitAltCores() {
     if (core.sock) { try { core.sock.write(JSON.stringify({ id: 0, ch: 'app:quit', args: [] }) + '\n'); } catch {} }
   }
 }
+
+// ---------- Extras: overlay do OBS, painel no celular e backups (extras.js) ----------
+let extras = null;
+// O que o overlay e o painel mostram: cada conta com o que foi lido do jogo e o fim de cada bônus.
+function extrasData(kind, conta) {
+  const tk = tkSnapshot();
+  const summary = pokeAccountsSummary();
+  const contas = tk.accounts.map((a) => ({ ...(summary.find((s) => s.id === a.id) || {}), ...a }));
+  if (kind === 'overlay') {
+    const id = contas.some((x) => x.id === conta) ? conta : (activeAlt || POKE_MAIN);
+    return contas.find((x) => x.id === id) || {};
+  }
+  return { farming: !!config.farming, assistindo: watchers.size, contas };
+}
+// Pasta de dados de cada conta (para o backup).
+const extrasDataDirs = () => [[POKE_MAIN, app.getPath('userData')], ...pokeAccountIds().filter((id) => id !== POKE_MAIN).map((id) => [id, `${MAIN_DATA}-${id}`])];
+function relaunchAll() {
+  quitAltCores();
+  app.isQuitting = true;
+  app.relaunch();
+  setTimeout(() => app.quit(), 500);
+}
+function startExtras() {
+  extras = require('./extras')({
+    app, getConfig: () => config, saveConfig, data: extrasData, dataDirs: extrasDataDirs, relaunch: relaunchAll,
+  });
+  extras.sync();
+  extras.autoBackup();
+  setInterval(() => extras.autoBackup(), 6 * 60 * 60 * 1000);
+}
+ipcMain.handle('extras:info', () => (extras ? extras.info() : null));
+ipcMain.handle('extras:set', (_e, patch = {}) => {
+  if ('overlayOn' in patch) config.overlayOn = !!patch.overlayOn;
+  if ('mobileOn' in patch) config.mobileOn = !!patch.mobileOn;
+  saveConfig();
+  if (extras) extras.sync();
+  return extras ? extras.info() : null;
+});
+ipcMain.handle('extras:backup', () => { try { return { ...extras.backupNow(), info: extras.info() }; } catch (e) { return { error: String(e.message || e) }; } });
+ipcMain.handle('extras:restore', (_e, name) => { try { return extras.restore(name); } catch (e) { return { error: String(e.message || e) }; } });
+ipcMain.handle('extras:openBackups', () => { const d = extras && extras.info().backupDir; if (d) { fs.mkdirSync(d, { recursive: true }); shell.openPath(d); } });
+ipcMain.handle('extras:copy', (_e, text) => { clipboard.writeText(String(text || '')); return true; });
 
 ipcMain.handle('state:get', () => (ACCOUNT ? snapshot() : snapshotForUi()));
 // Aceita "canal" ou kick.com/canal (Kick) e "twitch:canal" ou twitch.tv/canal (Twitch).
@@ -3103,6 +3145,7 @@ app.whenReady().then(() => {
     if (process.env.KICKTERINO_LIMIT_AUTOSTART) { startLimitTest(); reconcileWatchers(); }
   });
   if (!ACCOUNT) setInterval(watchPokeAccounts, POKE_WATCH_MS); // contas do PokeIdle: modo, leitura e vigia
+  if (!ACCOUNT) startExtras(); // overlay do OBS, painel no celular e backups
   scheduleTwitchSweep(90 * 1000); // primeira passada pelos saldos da Twitch logo depois de abrir
   setInterval(poll, POLL_MS);
   setInterval(() => send('status', snapshot()), 15 * 1000);
