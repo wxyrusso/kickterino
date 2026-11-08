@@ -42,6 +42,8 @@ app.commandLine.appendSwitch('disable-background-media-suspend');
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,BackgroundVideoTrackOptimization,IntensiveWakeUpThrottling');
 // O JavaScript de cada página reserva menos memória "jovem".
 app.commandLine.appendSwitch('js-flags', '--max-semi-space-size=1');
+// As alts rodam por trás, sem nada na tela: sem placa de vídeo, cada uma gasta ~250 MB a menos.
+if (process.argv.includes('--tk-fundo')) app.disableHardwareAcceleration();
 
 // Contas extras (alts): "--conta=alt1" abre uma cópia separada do app, com pasta de dados própria
 // (logins da Kick, da Twitch e do PokeIdle, canais, bônus e histórico só daquela conta). Cada cópia
@@ -535,7 +537,8 @@ function startWatcher(slug) {
 // no chat popout. Em vez de um chat aberto por live (pesado), UMA janela invisível passa pelos
 // canais da Twitch de tempos em tempos: lê o saldo de todos (para perceber os bônus comprados) e
 // coleta o baú dos canais assistidos. Entre uma passada e outra ela fica fechada.
-const SWEEP_GAP_MS = 3 * 60 * 1000;  // pausa entre o fim de uma passada e o começo da próxima
+const SWEEP_GAP_MS = 5 * 60 * 1000;  // pausa entre o fim de uma passada e o começo da próxima
+const SWEEP_OFFLINE_MS = 30 * 60 * 1000; // canal offline: o saldo quase não muda; relê a cada 30 min
 let sweepWin = null;
 let sweeping = false;
 
@@ -587,6 +590,9 @@ async function twitchSweep() {
     const order = [...watched, ...keys.filter((k) => !watched.includes(k))];
     for (const key of order) {
       if (!config.channels.includes(key)) continue;
+      const st0 = status.get(key) || {};
+      // Offline e lido há pouco: pula (menos CPU e internet). Assistidos e ao vivo sempre entram.
+      if (!watchers.has(key) && st0.live === false && st0.pointsReadAt && Date.now() - st0.pointsReadAt < SWEEP_OFFLINE_MS) continue;
       const win = openSweepWin();
       await withTimeout(win.loadURL(`${TWITCH}/popout/${nameOf(key)}/chat`), 25 * 1000).catch(() => {});
       if (win.isDestroyed()) break;
@@ -1359,6 +1365,7 @@ async function ensurePokeView(id) {
   if (pokeIsOpen(id)) return pokeViews.get(id);
   const view = new WebContentsView({ webPreferences: { partition: pokePartition(id), backgroundThrottling: false } });
   view.setBackgroundColor('#1b1b1b');
+  if (!mainWin) return null;
   mainWin.contentView.addChildView(view);
   attachPokeReader(view.webContents, id);
   // Página do jogo que caiu: abre de novo (e o vigia avisa).
@@ -1429,7 +1436,7 @@ function closePokeIdle(id = POKE_MAIN) {
   // Na grade, as contas que sobraram ocupam o espaço da que fechou.
   if (pokeGrid && pokeActive) setImmediate(applyPokeBounds);
   if (view) {
-    try { mainWin.contentView.removeChildView(view); } catch {}
+    try { if (mainWin) mainWin.contentView.removeChildView(view); } catch {}
     try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch {}
   }
   send('status', snapshot());
@@ -1470,9 +1477,9 @@ const pokeLastReload = new Map();  // id -> última vez que a conta foi recarreg
 const pokeFails = new Map();       // id -> leituras seguidas sem resposta
 
 const pokeSettings = () => ({
-  autoUltra: !!config.pokeAutoUltra,
+  autoUltra: config.pokeAutoUltra !== false, // ligado por padrão (menos memória e CPU)
   ultraDelayMin: config.pokeUltraDelayMin || 3,
-  optimizeMin: config.pokeOptimizeMin || 0,
+  optimizeMin: config.pokeOptimizeMin ?? 240, // a cada 4 h por padrão
   vigia: { on: config.pokeVigia !== false, paradaMin: config.pokeParadaMin || 10, ntfy: config.pokeNtfy || '', discord: config.pokeDiscord || '' },
 });
 const pokeChosenMode = (id) => ((config.pokeModes || {})[id] in POKE_MODES ? config.pokeModes[id] : 'cena');
@@ -1480,7 +1487,7 @@ const pokeOnScreen = (id) => pokeIsOpen(id) && pokeViews.get(id).getVisible();
 
 function pokeWantedMode(id) {
   if (pokeOnScreen(id)) return pokeChosenMode(id);
-  if (!config.pokeAutoUltra) return pokeChosenMode(id);
+  if (config.pokeAutoUltra === false) return pokeChosenMode(id);
   const since = pokeHiddenSince.get(id);
   return since && Date.now() - since >= (config.pokeUltraDelayMin || 3) * 60 * 1000 ? 'ultra' : pokeChosenMode(id);
 }
@@ -1570,7 +1577,7 @@ async function watchPokeAccount(id) {
   else pokeResolved(id);
   await applyPokeMode(id);
   // Otimizar: recarrega a conta de tempos em tempos (só fora da tela), para liberar memória.
-  const every = (config.pokeOptimizeMin || 0) * 60 * 1000;
+  const every = (config.pokeOptimizeMin ?? 240) * 60 * 1000;
   if (every && !pokeOnScreen(id) && now - (pokeLastReload.get(id) || now - every) >= every && info.logged) {
     pokeLastReload.set(id, now);
     wc.reload();
@@ -1972,6 +1979,7 @@ async function checkTwitchPage(slug, win, s) {
     }
   }
   s.points = p.value;
+  s.pointsReadAt = Date.now();
   s.pointsApprox = p.approx;
 }
 
@@ -2916,6 +2924,7 @@ ipcMain.handle('report:get', () => weeklyReport());
 // Salva o card do relatório como imagem (o recorte é a área do card na janela).
 ipcMain.handle('report:save', async (_e, rect) => {
   const r = { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) };
+  if (!mainWin) return { canceled: true };
   const image = await mainWin.webContents.capturePage(r);
   const { canceled, filePath } = await dialog.showSaveDialog(mainWin, {
     title: 'Salvar resumo da semana',
@@ -3089,45 +3098,47 @@ app.whenReady().then(() => {
   loadConfig();
   setupSession();
   loadPokeExtensions();
-  mainWin = new BrowserWindow({
-    width: 1100, height: 760, backgroundColor: '#1a1a1a', title: APP_TITLE,
-    show: !process.argv.includes('--hidden') && !HEADLESS, // ao iniciar com o Windows, abre direto na bandeja
-    icon: path.join(__dirname, 'build', 'icon.png'),
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false },
-  });
-  mainWin.setMenuBarVisibility(false);
-  // Sem isto o Windows mostra na barra de tarefas (e ao fixar) o ícone do electron.exe, um átomo.
-  if (process.platform === 'win32' && !HEADLESS) {
-    const ico = path.join(__dirname, 'build', 'terino-atomo.ico');
-    const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
-    mainWin.setAppDetails({
-      appId: ACCOUNT ? `com.streamterino.app.${ACCOUNT}` : 'com.streamterino.app',
-      appIconPath: fs.existsSync(ico) ? ico : path.join(__dirname, 'build', 'icon.ico'),
-      appIconIndex: 0,
-      relaunchCommand: app.isPackaged ? `"${exe}"${ACCOUNT ? ` --conta=${ACCOUNT}` : ''}`
-        : `"${exe}" "${app.getAppPath()}"${ACCOUNT ? ` --conta=${ACCOUNT}` : ''}`,
-      relaunchDisplayName: APP_TITLE,
+  // Conta alt por trás: sem janela nenhuma (quem mostra é a janela da principal).
+  if (!HEADLESS) {
+    mainWin = new BrowserWindow({
+      width: 1100, height: 760, backgroundColor: '#1a1a1a', title: APP_TITLE,
+      show: !process.argv.includes('--hidden'), // ao iniciar com o Windows, abre direto na bandeja
+      icon: path.join(__dirname, 'build', 'icon.png'),
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false },
     });
-  }
-  // Conta alt por trás: sem interface (quem mostra é a janela da principal).
-  if (!HEADLESS) mainWin.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  if (ACCOUNT) startControlServer();
-  // Fechar a janela não para o farm: o app continua na bandeja, perto do relógio.
-  mainWin.on('close', (e) => {
-    if (app.isQuitting) return;
-    e.preventDefault();
-    mainWin.hide();
-    if (!config.trayHintShown) {
-      config.trayHintShown = true;
-      saveConfig();
-      notify('O TK MultiStream continua farmando', isLinux
-        ? 'Ele fica na bandeja do sistema. Se o ícone não aparecer, abra o TK MultiStream de novo pelo menu de apps. Para sair de vez, use o botão Sair.'
-        : 'Ele fica na bandeja, perto do relógio. Para sair de vez: botão direito no ícone > Sair.', showMain);
+    mainWin.setMenuBarVisibility(false);
+    // Sem isto o Windows mostra na barra de tarefas (e ao fixar) o ícone do electron.exe, um átomo.
+    if (process.platform === 'win32') {
+      const ico = path.join(__dirname, 'build', 'terino-atomo.ico');
+      const exe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+      mainWin.setAppDetails({
+        appId: ACCOUNT ? `com.streamterino.app.${ACCOUNT}` : 'com.streamterino.app',
+        appIconPath: fs.existsSync(ico) ? ico : path.join(__dirname, 'build', 'icon.ico'),
+        appIconIndex: 0,
+        relaunchCommand: app.isPackaged ? `"${exe}"${ACCOUNT ? ` --conta=${ACCOUNT}` : ''}`
+          : `"${exe}" "${app.getAppPath()}"${ACCOUNT ? ` --conta=${ACCOUNT}` : ''}`,
+        relaunchDisplayName: APP_TITLE,
+      });
     }
-  });
-  // Desligar ou reiniciar o Windows não pode ficar preso na janela escondida.
-  mainWin.on('query-session-end', () => { app.isQuitting = true; });
-  mainWin.on('session-end', () => { app.isQuitting = true; });
+    mainWin.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+    // Fechar a janela não para o farm: o app continua na bandeja, perto do relógio.
+    mainWin.on('close', (e) => {
+      if (app.isQuitting) return;
+      e.preventDefault();
+      mainWin.hide();
+      if (!config.trayHintShown) {
+        config.trayHintShown = true;
+        saveConfig();
+        notify('O TK MultiStream continua farmando', isLinux
+          ? 'Ele fica na bandeja do sistema. Se o ícone não aparecer, abra o TK MultiStream de novo pelo menu de apps. Para sair de vez, use o botão Sair.'
+          : 'Ele fica na bandeja, perto do relógio. Para sair de vez: botão direito no ícone > Sair.', showMain);
+      }
+    });
+    // Desligar ou reiniciar o Windows não pode ficar preso na janela escondida.
+    mainWin.on('query-session-end', () => { app.isQuitting = true; });
+    mainWin.on('session-end', () => { app.isQuitting = true; });
+  }
+  if (ACCOUNT) startControlServer();
 
   if (!HEADLESS) createTray();
   syncKeepAwake();
@@ -3155,4 +3166,4 @@ app.whenReady().then(() => {
 });
 
 app.on('before-quit', () => { app.isQuitting = true; twitchChat.close(); if (!ACCOUNT) quitAltCores(); });
-app.on('window-all-closed', () => app.quit());
+app.on('window-all-closed', () => { if (!HEADLESS) app.quit(); }); // a alt sai quando a principal manda
