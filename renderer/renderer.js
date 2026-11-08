@@ -299,11 +299,13 @@ function renderPokeBox() {
     card.onclick = (e) => { if (e.target === card || e.target.classList.contains('pk-info')) { switchAccount(c.id).then(() => showPoke(c.id)); } };
     box.append(card);
   }
-  // Ajustes
-  const det = el('details', 'pk-settings');
-  if (pokeSettingsOpen) det.open = true;
-  det.ontoggle = () => { pokeSettingsOpen = det.open; };
-  det.append(el('summary', null, 'Economia e vigia'));
+  box.append(button('⚙ Vigia, avisos e economia', 'pk-test', () => openSettings('vigia')));
+}
+
+// Campos de Configurações → Vigia e avisos / Economia (antes ficavam escondidos no painel).
+function buildPokeSettings(tab) {
+  const set = (state.pokeIdle || {}).settings || { vigia: {} };
+  const det = el('div', 'pk-settings-tab');
   const row = (label, input, hint) => { const r = el('label', 'pk-row'); r.append(input, el('span', null, label)); if (hint) r.title = hint; return r; };
   const chk = (on, fn) => { const i = el('input'); i.type = 'checkbox'; i.checked = !!on; i.onchange = () => fn(i.checked); return i; };
   const save = async (patch) => applyState(await window.kick.pokeSettings(patch));
@@ -330,7 +332,9 @@ function renderPokeBox() {
   const test = el('button', 'pk-test', 'Testar aviso');
   test.onclick = async () => { await window.kick.pokeTestAlert(); toast('Aviso de teste enviado.'); };
   det.append(test);
-  box.append(det);
+  if (tab === 'vigia') for (const n of [...det.children].slice(0, 2)) n.remove(); // ULTRA e recarregar ficam em Economia
+  else for (const n of [...det.children].slice(2)) n.remove();
+  return det;
 }
 
 // ---------- 🧰 Extras: overlay do OBS, painel no celular e backups ----------
@@ -405,9 +409,44 @@ async function renderExtrasModal(message = '') {
   const actions = el('div', 'modal-actions');
   actions.append(button('Fechar', null, closeModal));
   wrap.append(actions);
-  if (modalKind === 'extras') $('#modal-card').replaceChildren(wrap);
+  if (modalKind === 'settings') {
+    // Dentro de Configurações: sem título e sem o Fechar próprios.
+    wrap.querySelector('h3')?.remove();
+    wrap.querySelector('.modal-actions')?.remove();
+    const body = $('#settings-body');
+    if (body && settingsTab === 'extras') body.replaceChildren(wrap);
+  } else if (modalKind === 'extras') $('#modal-card').replaceChildren(wrap);
 }
-$('#btn-extras').onclick = () => { openModal('extras', el('div')); renderExtrasModal(); };
+$('#btn-extras').onclick = () => openSettings('extras');
+
+// ---------- ⚙ Configurações ----------
+// Tudo que é ajuste num lugar só, aberto pela engrenagem da barra de contas.
+let settingsTab = 'vigia';
+const SETTINGS_TABS = [['vigia', '🚨 Vigia e avisos'], ['economia', '⚡ Economia'], ['extras', '🧰 Extras']];
+function openSettings(tab = settingsTab) {
+  settingsTab = tab;
+  const wrap = el('div', 'settings-modal');
+  wrap.append(el('h3', null, '⚙ Configurações'));
+  const tabs = el('div', 'settings-tabs');
+  for (const [id, label] of SETTINGS_TABS) {
+    const b = button(label, 'settings-tab' + (id === tab ? ' on' : ''), () => openSettings(id));
+    tabs.append(b);
+  }
+  wrap.append(tabs);
+  const body = el('div', null); body.id = 'settings-body';
+  wrap.append(body);
+  const actions = el('div', 'modal-actions');
+  actions.append(button('Fechar', null, closeModal));
+  wrap.append(actions);
+  openModal('settings', wrap);
+  if (tab === 'extras') renderExtrasModal();
+  else {
+    body.append(el('p', 'settings-intro', tab === 'vigia'
+      ? 'O vigia confere as contas do PokeIdle a cada minuto e avisa quando uma conta cai, desloga, trava ou fica sem ganhar XP. O aviso no PC é sempre feito; celular e Discord são opcionais.'
+      : 'Para gastar menos memória e CPU com várias contas do PokeIdle abertas.'));
+    body.append(buildPokeSettings(tab));
+  }
+}
 
 // ---------- Barra de contas ----------
 // Principal e alts lado a lado no topo. Escolher uma conta faz a janela inteira (canais, painel,
@@ -483,6 +522,10 @@ function renderAccountsBar() {
     applyState(await window.kick.openAllPoke(id, chatRect()));
   };
   bar.append(all);
+  const gear = el('div', 'acc-tab acc-gear', '⚙');
+  gear.title = 'Configurações: vigia e avisos, economia, overlay, celular e backups';
+  gear.onclick = () => openSettings();
+  bar.append(gear);
 }
 window.kick.onFocusToggle(() => setFocusMode(!focusMode));
 // A área do chat muda de tamanho (janela, painel de pontos, abas em mais linhas): o jogo acompanha.

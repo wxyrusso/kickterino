@@ -190,3 +190,25 @@ body.poke-focus #accounts-bar { display: none !important; }
 .ex-backup { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding: 2px 4px; }
 .ex-backup button.armed { border-color: #ff6b6b; color: #ff8a8a; }
 .ex-msg { color: var(--accent); }
+
+/* ⚙ Configurações */
+.acc-tab.acc-gear { font-size: 15px; padding: 3px 11px; color: var(--accent); border-color: rgba(var(--accent-rgb), .45); }
+.settings-modal { display: flex; flex-direction: column; gap: 8px; width: min(560px, 88vw); max-height: 82vh; }
+.settings-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.settings-tab { border-radius: 999px; padding: 4px 12px; font-size: 12.5px; }
+.settings-tab.on { border-color: var(--accent); color: var(--accent); background: rgba(var(--accent-rgb), .1); }
+#settings-body { overflow-y: auto; min-height: 120px; }
+#settings-body .extras-modal { width: auto; max-height: none; overflow: visible; }
+.settings-intro { font-size: 12px; line-height: 1.5; opacity: .85; margin: 2px 0 8px; }
+.pk-settings-tab .pk-row { font-size: 12.5px; margin: 8px 2px; }
+.pk-settings-tab .pk-row input:not([type]) { max-width: 300px; }
+/* Configurações: nada passa da borda; nos campos de texto, o rótulo fica em cima */
+.settings-modal, .settings-modal * { box-sizing: border-box; }
+.settings-modal { width: min(540px, 86vw); max-width: 86vw; }
+#settings-body { overflow-x: hidden; }
+.pk-settings-tab .pk-row { flex-wrap: wrap; align-items: center; }
+.pk-settings-tab .pk-row span { flex: 1 1 220px; min-width: 0; white-space: normal; }
+.pk-settings-tab .pk-row input:not([type]) { order: 2; flex: 1 1 100%; width: 100%; max-width: none; background: var(--bg-2); color: var(--txt, #eef0f4); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+.pk-settings-tab .pk-row select { background: var(--bg-2); color: var(--txt, #eef0f4); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; }
+.settings-modal .modal-actions { justify-content: flex-end; }
+#modal-card:has(.settings-modal) { overflow-x: hidden; }
