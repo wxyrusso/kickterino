@@ -1110,7 +1110,7 @@ function renderRedeemProgress(job, account, platform) {
   if (job.status === 'running') {
     const current = job.current ? ` · ${job.current.label} (${job.current.platform === 'twitch' ? 'Twitch' : 'Kick'})` : '';
     const phase = !job.current ? '' : job.current.phase === 'checking-points' ? ' · conferindo saldo antes de abrir'
-      : job.current.phase === 'redeeming' ? ` · resgate ${job.current.attempt}/${job.current.attempts}` : '';
+      : job.current.phase === 'redeeming' ? ` · compra ${job.current.attempt}` : '';
     wrap.append(el('p', null, `Canal ${Math.min(job.done + 1, job.total)} de ${job.total}${current}${phase}`));
     const progress = el('progress', 'redeem-progress');
     progress.max = Math.max(1, job.total); progress.value = job.done;
