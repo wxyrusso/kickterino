@@ -1631,7 +1631,7 @@ const POKE_READ_SCRIPT = `(() => {
   const app = q('#app');
   const nick = txt('#tr-nick');
   let sess = null;
-  try { const o = nick && JSON.parse(localStorage.getItem('sessao-hunt:' + nick.toLowerCase()) || 'null'); if (o && o.ms > 0) sess = { ms: o.ms, xp: +o.xpTreinador || 0, gold: +o.gold || 0, abates: +o.abates || 0, capturas: +o.capturas || 0 }; } catch {}
+  try { const o = nick && JSON.parse(localStorage.getItem('sessao-hunt:' + nick.toLowerCase()) || 'null'); if (o && o.ms > 0) sess = { ms: o.ms, xp: +o.xpTreinador || 0, gold: +o.gold || 0, abates: +o.abates || 0, capturas: +o.capturas || 0, shinies: +o.shinies || 0, shiniesVistos: +o.shiniesVistos || 0, bossTokens: +o.bossTokens || 0, itens: Object.fromEntries(['fragChave', 'fragShiny', 'fragBicicleta', 'fragMega', 'fragMegaShiny', 'fragOvoShiny', 'tmPeca', 'tmPecaAoe', 'ticketMistico', 'ticketSafari'].map((k) => [k, +o[k] || 0]).filter((e) => e[1] > 0)) }; } catch {}
   return {
     logged: (!!app && !app.classList.contains('hidden')) || token,
     loginScreen: !token && !!q('input[type="password"]'),
@@ -1644,6 +1644,9 @@ const POKE_READ_SCRIPT = `(() => {
 async function pokeAlert(id, problem, text) {
   if (pokeAlerted.get(id) === problem) return; // já avisado; volta a avisar quando resolver e acontecer de novo
   pokeAlerted.set(id, problem);
+  pokeShout(id, text);
+}
+function pokeShout(id, text) {
   const vig = pokeSettings().vigia;
   if (!vig.on) return;
   const title = `PokeIdle — ${pokeLabel(id)}`;
@@ -1683,7 +1686,14 @@ async function watchPokeAccount(id) {
   const prev = pokeInfo.get(id) || {};
   const info = { at: now, logged: !!r.logged, nick: r.logged ? (r.nick || prev.nick || null) : null, level: r.logged ? (r.level || prev.level || null) : null, gold: r.logged ? (r.gold || prev.gold || null) : null,
     mode: r.mode, xpH: r.sess && r.sess.ms > 60000 ? Math.round(r.sess.xp / r.sess.ms * 3600e3) : null, sessXp: r.sess ? r.sess.xp : null,
-    abates: r.sess ? r.sess.abates : null, capturas: r.sess ? r.sess.capturas : null, problem: null };
+    abates: r.sess ? r.sess.abates : null, capturas: r.sess ? r.sess.capturas : null, shinies: r.sess ? r.sess.shinies : null,
+    shiniesVistos: r.sess ? r.sess.shiniesVistos : null, bossTokens: r.sess ? r.sess.bossTokens : null, itens: r.sess ? r.sess.itens : null,
+    sessMs: r.sess ? r.sess.ms : null, problem: null };
+  // Shiny na mesma sessão de caça (o placar só sobe; se ele voltou a zero, é uma sessão nova): avisa.
+  if (prev.shinies != null && info.shinies != null && (info.sessMs || 0) >= (prev.sessMs || 0)) {
+    if (info.shinies > prev.shinies) pokeShout(id, `✨ Pegou um SHINY! Já são ${info.shinies} nesta sessão.`);
+    else if (info.shiniesVistos > prev.shiniesVistos) pokeShout(id, '✨ Apareceu um shiny na hunt (ainda não capturado).');
+  }
   // XP parado: o placar da sessão não sobe há X minutos (com a conta logada).
   if (info.sessXp != null) {
     const last = pokeXpSince.get(id);
@@ -1719,6 +1729,7 @@ function pokeAccountsSummary() {
     const i = pokeInfo.get(id) || {};
     return { id, label: pokeLabel(id), open: pokeIsOpen(id), mode: pokeChosenMode(id), modeNow: i.mode || null,
       nick: i.nick || null, level: i.level || null, gold: i.gold || null, xpH: i.xpH, abates: i.abates, capturas: i.capturas,
+      shinies: i.shinies, shiniesVistos: i.shiniesVistos, bossTokens: i.bossTokens, itens: i.itens || null, sessMs: i.sessMs,
       logged: i.logged ?? null, problem: i.problem || null, readAt: i.at || null };
   });
 }

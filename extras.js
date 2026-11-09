@@ -212,6 +212,7 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
   .chip.ok { background: var(--accent); color: #0b1a1f; } .chip.bad { background: #e5484d; color: #fff; }
   .line { font-size: 13px; color: var(--muted); margin: 3px 0 6px; font-weight: 500; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; } td { padding: 3px 2px; } td:last-child, td:nth-child(3) { text-align: right; }
+  .stats { color: var(--txt); } .shiny { color: #ffd34d; font-weight: 700; }
   .acts { display: flex; gap: 8px; margin-top: 8px; }
   .acts button { flex: 1; font: inherit; font-size: 13px; padding: 9px 6px; border-radius: 10px; border: 1px solid var(--line); background: #1c2233; color: var(--txt); }
   .bn { font: inherit; font-size: 12.5px; color: inherit; background: none; border: 1px solid var(--line); border-radius: 8px; padding: 5px 4px; width: 100%; text-align: inherit; }
@@ -232,6 +233,8 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
   const TIPOS = ['xp', 'captura', 'shiny'];
   const FULL = ['+15% XP', '+15% Capture Boost', '+15% Secret Lure'];
   const COST = [300, 500, 1000];
+  const n = (v) => Number(v || 0).toLocaleString('pt-BR');
+  const ITENS = { fragChave: 'frag. de chave', fragShiny: 'frag. shiny', fragBicicleta: 'frag. de bicicleta', fragMega: 'frag. mega', fragMegaShiny: 'frag. mega shiny', fragOvoShiny: 'frag. de ovo shiny', tmPeca: 'peça de TM', tmPecaAoe: 'peça de TM em área', ticketMistico: 'ticket místico', ticketSafari: 'ticket Safari' };
   const msgs = {}, busy = {};
   let last = null;
   async function agir(a, payload, pergunta, aguarde) {
@@ -254,6 +257,16 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
       const st = !a.open ? ['fechada', ''] : a.problem === 'deslogou' ? ['deslogou', 'bad'] : a.problem === 'parada' ? ['sem XP', 'bad'] : a.logged ? ['caçando', 'ok'] : ['sem login', ''];
       h.append(el('span', 'chip ' + st[1], st[0])); box.append(h);
       box.append(el('div', 'line', [a.level ? 'Nv ' + a.level : '', a.xpH ? Math.round(a.xpH / 1000) + ' mil XP/h' : '', a.gold ? '💰 ' + a.gold : ''].filter(Boolean).join(' · ') || ' '));
+      // Placar da sessão de caça do jogo: capturas, shinies, abates e o que caiu.
+      if (a.capturas != null) {
+        const st = el('div', 'line stats');
+        const sh = el('span', a.shinies ? 'shiny' : null, '✨ ' + n(a.shinies) + ' shiny' + (a.shinies === 1 ? '' : 's') + (a.shiniesVistos ? ' (' + n(a.shiniesVistos) + ' visto' + (a.shiniesVistos === 1 ? '' : 's') + ')' : ''));
+        st.append(el('span', null, '🎯 ' + n(a.capturas) + ' capturas · '), sh, el('span', null, ' · ⚔ ' + n(a.abates) + ' abates' + (a.sessMs ? ' · ⏱ ' + fmt(a.sessMs) + ' de sessão' : '')));
+        box.append(st);
+        const it = Object.entries(a.itens || {}).map(([k, v]) => n(v) + ' ' + (ITENS[k] || k));
+        if (a.bossTokens) it.unshift(n(a.bossTokens) + ' boss token' + (a.bossTokens === 1 ? '' : 's'));
+        if (it.length) box.append(el('div', 'line', '🎁 ' + it.join(' · ')));
+      }
       const tb = el('table');
       for (const [plat, cls, label] of [['twitch', 'tw', 'Twitch'], ['kick', 'kk', 'Kick']]) {
         const tr = el('tr'); tr.append(el('td', cls, label));
