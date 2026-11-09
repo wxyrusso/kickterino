@@ -257,6 +257,12 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
       const st = !a.open ? ['fechada', ''] : a.problem === 'deslogou' ? ['deslogou', 'bad'] : a.problem === 'parada' ? ['sem XP', 'bad'] : a.logged ? ['caçando', 'ok'] : ['sem login', ''];
       h.append(el('span', 'chip ' + st[1], st[0])); box.append(h);
       box.append(el('div', 'line', [a.level ? 'Nv ' + a.level : '', a.xpH ? Math.round(a.xpH / 1000) + ' mil XP/h' : '', a.gold ? '💰 ' + a.gold : ''].filter(Boolean).join(' · ') || ' '));
+      if (a.ativo && (a.ativo.nome || a.ativo.level)) {
+        const pk = el('div', 'line stats');
+        pk.append(el('span', null, '🐾 '), el('span', a.ativo.shiny ? 'shiny' : null, (a.ativo.shiny ? '✨ ' : '') + (a.ativo.nome || 'Pokémon')),
+          el('span', null, (a.ativo.level ? ' · Nv ' + n(a.ativo.level) : '') + (a.ativo.xpPct != null && a.ativo.level ? ' · ' + a.ativo.xpPct + '% para o Nv ' + n(a.ativo.level + 1) : '')));
+        box.append(pk);
+      }
       // Placar da sessão de caça do jogo: capturas, shinies, abates e o que caiu.
       if (a.capturas != null) {
         const st = el('div', 'line stats');
