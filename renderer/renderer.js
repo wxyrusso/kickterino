@@ -309,6 +309,8 @@ function buildPokeSettings(tab) {
   const row = (label, input, hint) => { const r = el('label', 'pk-row'); r.append(input, el('span', null, label)); if (hint) r.title = hint; return r; };
   const chk = (on, fn) => { const i = el('input'); i.type = 'checkbox'; i.checked = !!on; i.onchange = () => fn(i.checked); return i; };
   const save = async (patch) => applyState(await window.kick.pokeSettings(patch));
+  det.append(row('Ao abrir o app, abrir todos os PokeIdle em grade', chk(set.startGrid, (v) => save({ startGrid: v })),
+    'Cada PokeIdle aberto gasta uns 600 MB de memória.'));
   det.append(row('ULTRA nas contas fora da tela', chk(set.autoUltra, (v) => save({ autoUltra: v })),
     `Depois de ${set.ultraDelayMin || 3} min fora da tela, a conta vai para o ULTRA (bem menos memória e CPU). Ao voltar para a tela, volta ao modo escolhido.`));
   const opt = el('select');
@@ -332,8 +334,8 @@ function buildPokeSettings(tab) {
   const test = el('button', 'pk-test', 'Testar aviso');
   test.onclick = async () => { await window.kick.pokeTestAlert(); toast('Aviso de teste enviado.'); };
   det.append(test);
-  if (tab === 'vigia') for (const n of [...det.children].slice(0, 2)) n.remove(); // ULTRA e recarregar ficam em Economia
-  else for (const n of [...det.children].slice(2)) n.remove();
+  if (tab === 'vigia') for (const n of [...det.children].slice(0, 3)) n.remove(); // grade ao abrir, ULTRA e recarregar ficam em Economia
+  else for (const n of [...det.children].slice(3)) n.remove();
   return det;
 }
 
@@ -1517,4 +1519,19 @@ function renderTwitchModal() {
 }
 
 // Carga inicial: escolhe o primeiro canal, mas sem tirar ninguém do PokeIdle se ele já estiver na tela.
-window.kick.getState().then((s) => { applyState(s); if (active && !pokeMode) select(active); });
+window.kick.getState().then((s) => {
+  applyState(s);
+  // Opção da ⚙ Economia: já abre o PokeIdle de todas as contas, lado a lado.
+  const poke = s.pokeIdle || {};
+  if ((poke.settings || {}).startGrid && !poke.grid) {
+    setTimeout(async () => {
+      if (pokeMode) return; // a pessoa já abriu o jogo nesse meio-tempo
+      const id = currentAccount();
+      pokeMode = id;
+      renderTabs();
+      applyState(await window.kick.pokeGrid(true, id, chatRect()));
+    }, 1500);
+    return;
+  }
+  if (active && !pokeMode) select(active);
+});

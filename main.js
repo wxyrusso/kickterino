@@ -774,6 +774,11 @@ const AUTOXP_BEFORE_MS = 6 * 60 * 1000;
 let autoXpBusy = false;
 let autoXpWaitUntil = 0;
 let autoXpWarned = 0;
+// Registro das tentativas (auto-xp.log na pasta de dados da conta), para saber por que não renovou.
+function autoXpLog(msg) {
+  try { fs.appendFileSync(path.join(app.getPath('userData'), 'auto-xp.log'), `${new Date().toLocaleString('pt-BR')} ${msg}
+`); } catch {}
+}
 function xpEndsAt(now = Date.now()) {
   return Math.max(bonusEnd('twitch', 0, now) || 0, bonusEnd('kick', 0, now) || 0);
 }
@@ -783,12 +788,14 @@ async function checkAutoXp() {
   if (now < autoXpWaitUntil) return;
   const end = xpEndsAt(now);
   if (end - now > AUTOXP_BEFORE_MS) return;
-  if ([...redeemJobs.values()].some((j) => j.status === 'running')) return;
+  if ([...redeemJobs.values()].some((j) => j.status === 'running')) { autoXpLog('esperando: um resgate manual está rodando'); return; }
   const cost = POKE_REDEEM_META.xp.cost;
   const rich = [...new Set(config.channels)]
     .map((slug) => [slug, status.get(slug) || {}])
     .filter(([, st]) => (st.points || 0) >= cost)
-    .sort((a, b) => b[1].points - a[1].points);
+    // Canais ao vivo primeiro: com a live desligada, muitos canais pausam as recompensas.
+    .sort((a, b) => (!!b[1].live - !!a[1].live) || (b[1].points - a[1].points));
+  autoXpLog(`bônus acaba em ${Math.round((end - now) / 60000)} min; canais com ${cost}+: ${rich.map(([sl, st]) => `${sl}=${st.points}`).join(', ') || 'nenhum'}`);
   if (!rich.length) {
     // Sem saldo em nenhum canal: avisa uma vez por fim de bônus e espera os pontos subirem.
     if (autoXpWarned !== end) {
@@ -800,9 +807,11 @@ async function checkAutoXp() {
   }
   autoXpBusy = true;
   try {
-    for (const [slug, st] of rich.slice(0, 3)) {
+    for (const [slug, st] of rich.slice(0, 8)) {
       const name = st.displayName || nameOf(slug);
-      const r = await redeemPokeBonusInChannel(slug, 'xp');
+      autoXpLog(`tentando em ${slug}`);
+      const r = await withTimeout(redeemPokeBonusInChannel(slug, 'xp'), 3 * 60 * 1000).catch((e) => ({ status: 'failed', message: `demorou demais (${e && e.message || e})` }));
+      autoXpLog(`${slug}: ${r.status} — ${r.message || ''}${r.panel ? ` | painel: ${r.panel}` : ''}`);
       if (r.status === 'redeemed' || r.status === 'submitted') {
         // Se a compra ainda não apareceu (a loja não confirmou a tempo), anota a 1 h para não comprar de novo.
         if (xpEndsAt() - Date.now() < 30 * 60 * 1000) addKnownPurchase(slug, cost, 1, 'auto');
@@ -814,7 +823,7 @@ async function checkAutoXp() {
       }
       if (r.reason === 'login-required') continue;
     }
-    // Nenhum dos 3 canais com mais pontos deu certo: tenta de novo daqui a 10 min.
+    // Nenhum dos canais com saldo deu certo: tenta de novo daqui a 10 min.
     autoXpWaitUntil = Date.now() + 10 * 60 * 1000;
     if (autoXpWarned !== end) {
       autoXpWarned = end;
@@ -914,7 +923,7 @@ function pokeRedeemSelectScript(tipo) {
       const disabled = !!el.disabled || el.getAttribute('aria-disabled') === 'true' || /disabled|is-disabled/.test(String(el.className || '').toLowerCase());
       return { el, text, price, hours, disabled };
     }).filter((x) => matches(x.text));
-    if (!allMatches.length) return pausedNotice ? { action: 'paused' } : { action: 'waiting' };
+    if (!allMatches.length) return pausedNotice ? { action: 'paused', panel: panelText.slice(0, 400) } : { action: 'waiting' };
     const exactPackage = allMatches.filter((x) => x.price === base && x.hours === 1);
     if (!exactPackage.length) return pausedNotice ? { action: 'paused' } : { action: 'target-missing', cost: base };
     const available = exactPackage.filter((x) => !x.disabled);
@@ -1162,7 +1171,7 @@ async function redeemPokeBonusInChannel(slug, tipo, balanceBefore = null, shared
         return { slug, status: 'skipped', message: `O pacote mais barato deste canal é de ${choice.hours} h por ${choice.cheapest.toLocaleString('pt-BR')} pontos; o saldo ainda não cobre.` };
       }
       else if (choice && choice.action === 'paused') {
-        return { slug, status: 'skipped', message: 'As recompensas deste canal estão pausadas pela Kick; passei para o próximo canal.' };
+        return { slug, status: 'skipped', reason: 'paused', panel: choice.panel || '', message: 'As recompensas deste canal estão pausadas pela Kick; passei para o próximo canal.' };
       }
     }
     if (!selected) return { slug, status: 'skipped', message: 'Não achei uma recompensa PokeIdle disponível.' };
@@ -1540,6 +1549,7 @@ const pokeSettings = () => ({
   autoUltra: config.pokeAutoUltra !== false, // ligado por padrão (menos memória e CPU)
   ultraDelayMin: config.pokeUltraDelayMin || 3,
   optimizeMin: config.pokeOptimizeMin ?? 240, // a cada 4 h por padrão
+  startGrid: config.pokeStartGrid !== false, // ao abrir o app, todos os PokeIdle em grade
   vigia: { on: config.pokeVigia !== false, paradaMin: config.pokeParadaMin || 10, ntfy: config.pokeNtfy || '', discord: config.pokeDiscord || '' },
 });
 const pokeChosenMode = (id) => ((config.pokeModes || {})[id] in POKE_MODES ? config.pokeModes[id] : 'cena');
@@ -1671,6 +1681,7 @@ ipcMain.handle('poke:setMode', async (_e, id, mode) => {
 });
 ipcMain.handle('poke:settings', (_e, patch = {}) => {
   if ('autoUltra' in patch) config.pokeAutoUltra = !!patch.autoUltra;
+  if ('startGrid' in patch) config.pokeStartGrid = !!patch.startGrid;
   if ('optimizeMin' in patch) config.pokeOptimizeMin = [0, 60, 120, 240, 360].includes(Number(patch.optimizeMin)) ? Number(patch.optimizeMin) : 0;
   if ('vigiaOn' in patch) config.pokeVigia = !!patch.vigiaOn;
   if ('paradaMin' in patch) config.pokeParadaMin = [5, 10, 15, 30].includes(Number(patch.paradaMin)) ? Number(patch.paradaMin) : 10;
@@ -3221,7 +3232,7 @@ app.whenReady().then(() => {
   scheduleTwitchSweep(90 * 1000); // primeira passada pelos saldos da Twitch logo depois de abrir
   setInterval(poll, POLL_MS);
   setInterval(() => send('status', snapshot()), 15 * 1000);
-  setInterval(() => { checkBonusEnding(); checkAutoXp().catch(() => {}); updateTray(); }, 30 * 1000);
+  setInterval(() => { checkBonusEnding(); checkAutoXp().catch((e) => autoXpLog('erro: ' + (e && e.stack || e))); updateTray(); }, 30 * 1000);
   setTimeout(syncPartners, 30 * 1000);
   setInterval(syncPartners, 6 * 60 * 60 * 1000);
 });
