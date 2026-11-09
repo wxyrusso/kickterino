@@ -373,11 +373,24 @@ async function renderExtrasModal(message = '') {
 
   const cel = el('section', 'ex-sec');
   cel.append(el('h4', null, '📱 Painel no celular'),
-    el('p', null, 'Abra o link no navegador do celular, ligado ao mesmo Wi-Fi do PC: todas as contas, o estado de cada uma, os bônus e o farm. Em cada conta, tocar num bônus compra 1 h dele na hora, e há dois botões para destravar quando ela para de caçar: Recarregar (o F5 do jogo) e Resetar /hunt. O link tem uma chave só sua: não compartilhe.'),
+    el('p', null, 'Abra o link no navegador do celular: todas as contas, o estado de cada uma, os bônus e o farm. Em cada conta, tocar num bônus compra 1 h dele na hora, e há dois botões para destravar quando ela para de caçar: Recarregar (o F5 do jogo) e Resetar /hunt. O link tem uma chave só sua: não compartilhe.'),
     toggle('Ligar o painel no celular', info.mobileOn, (v) => window.kick.extrasSet({ mobileOn: v })));
   if (info.mobileOn) {
-    cel.append(info.mobileUrl ? copyRow(info.mobileUrl) : el('p', 'ex-note', 'Não encontrei o PC na rede (sem Wi-Fi ou cabo?).'),
-      el('p', 'ex-note', 'Na primeira vez o Windows pode perguntar se o app pode usar a rede: permita em "Redes privadas".'));
+    cel.append(el('h5', null, '🏠 Em casa (no mesmo Wi-Fi do PC)'),
+      info.mobileUrl ? copyRow(info.mobileUrl) : el('p', 'ex-note', 'Não encontrei o PC na rede (sem Wi-Fi ou cabo?).'));
+    cel.append(el('h5', null, '🌎 Fora de casa (5G, outro Wi-Fi)'));
+    if (info.remoteUrl) {
+      cel.append(copyRow(info.remoteUrl), el('p', 'ex-note', 'Pelo Tailscale: funciona em qualquer lugar com o Tailscale ligado no celular, na mesma conta do PC. Só os seus aparelhos chegam nele.'));
+    } else {
+      cel.append(el('p', 'ex-note', 'Instale o Tailscale (tailscale.com/download) no PC e no celular e entre com a mesma conta nos dois. Depois feche e abra esta tela: o link de fora de casa aparece aqui.'));
+    }
+    const send = button('📲 Mandar o link para o celular', null, async () => {
+      const res = await window.kick.extrasSendLink();
+      toast(res.error ? res.error : 'Link enviado: toque na notificação do ntfy no celular.');
+    });
+    const sendBar = el('div', 'ex-actions');
+    sendBar.append(send);
+    cel.append(sendBar, el('p', 'ex-note', 'O botão manda o link pelo ntfy (o mesmo dos avisos do vigia). Na primeira vez o Windows pode perguntar se o app pode usar a rede: permita.'));
   }
   wrap.append(cel);
 

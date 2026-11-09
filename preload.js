@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('kick', {
   extrasRestore: (name) => ipcRenderer.invoke('extras:restore', name),
   extrasOpenBackups: () => ipcRenderer.invoke('extras:openBackups'),
   extrasCopy: (text) => ipcRenderer.invoke('extras:copy', text),
+  extrasSendLink: () => ipcRenderer.invoke('extras:sendLink'),
   switchAccount: (id) => ipcRenderer.invoke('tk:switch', id),
   addTkAccount: (name) => ipcRenderer.invoke('tk:add', name),
   removeTkAccount: (id) => ipcRenderer.invoke('tk:remove', id),

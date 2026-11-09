@@ -2991,6 +2991,20 @@ ipcMain.handle('extras:backup', () => { try { return { ...extras.backupNow(), in
 ipcMain.handle('extras:restore', (_e, name) => { try { return extras.restore(name); } catch (e) { return { error: String(e.message || e) }; } });
 ipcMain.handle('extras:openBackups', () => { const d = extras && extras.info().backupDir; if (d) { fs.mkdirSync(d, { recursive: true }); shell.openPath(d); } });
 ipcMain.handle('extras:copy', (_e, text) => { clipboard.writeText(String(text || '')); return true; });
+// Manda o link do painel para o celular pelo ntfy (o mesmo tópico dos avisos do vigia): tocar na
+// notificação abre o painel. Só o link do próprio painel, e só quando a pessoa clica.
+ipcMain.handle('extras:sendLink', async () => {
+  const topic = pokeSettings().vigia.ntfy;
+  const info = extras && extras.info();
+  const url = info && (info.remoteUrl || info.mobileUrl);
+  if (!topic) return { error: 'Configure o aviso no celular (ntfy) em ⚙ > Vigia e avisos.' };
+  if (!url) return { error: 'O painel do celular está desligado ou o PC está sem rede.' };
+  const r = await net.fetch(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
+    method: 'POST', body: `Painel do TK MultiStream${info.remoteUrl ? ' (abre em qualquer lugar com o Tailscale ligado)' : ' (só no Wi-Fi de casa)'}`,
+    headers: { Title: 'TK MultiStream: painel no celular', Click: url, Tags: 'iphone' },
+  }).catch((e) => ({ ok: false, statusText: String(e && e.message || e) }));
+  return r.ok ? { ok: true } : { error: `O ntfy não aceitou (${r.status || ''} ${r.statusText || ''}).` };
+});
 
 ipcMain.handle('state:get', () => (ACCOUNT ? snapshot() : snapshotForUi()));
 // Aceita "canal" ou kick.com/canal (Kick) e "twitch:canal" ou twitch.tv/canal (Twitch).

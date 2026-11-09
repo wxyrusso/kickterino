@@ -2,7 +2,8 @@
 // Fica fora do main.js; recebe do main só o que precisa (dados para mostrar e onde gravar).
 //
 // - Overlay (OBS): http://127.0.0.1:<porta>/overlay — só responde no próprio PC.
-// - Painel no celular: http://<IP do PC na rede>:<porta>/celular?t=<chave> — mostra as contas; em cada
+// - Painel no celular: http://<IP do PC na rede>:<porta>/celular?t=<chave> (fora de casa: o mesmo link
+//   com o IP do PC no Tailscale, a rede privada entre os aparelhos da pessoa) — mostra as contas; em cada
 //   uma, tocar num bônus compra 1 h dele, e há Recarregar e Resetar /hunt. Protegido por uma chave
 //   aleatória; só fica na rede quando a pessoa liga.
 // - Backups: cópia dos config.json de todas as contas (sem logins: os cookies não entram) numa
@@ -20,12 +21,21 @@ module.exports = function createExtras(ctx) {
 
   const cfg = () => ctx.getConfig();
   const port = () => Number(cfg().extrasPort) || 17777;
-  const lanIp = () => {
-    for (const list of Object.values(os.networkInterfaces())) {
-      for (const n of list || []) if (n.family === 'IPv4' && !n.internal && !/^169\.254\./.test(n.address)) return n.address;
+  // IPv4 do PC: o da rede de casa (Wi-Fi/cabo) e o do Tailscale (faixa 100.64.0.0/10), que liga os
+  // aparelhos da pessoa entre si de qualquer lugar (o celular no 5G alcança o PC por ele).
+  const isTailscale = (name, ip) => /tailscale/i.test(name) || (() => { const [a, b] = ip.split('.').map(Number); return a === 100 && b >= 64 && b <= 127; })();
+  const ipv4s = () => {
+    const out = [];
+    for (const [name, list] of Object.entries(os.networkInterfaces())) {
+      for (const n of list || []) if (n.family === 'IPv4' && !n.internal && !/^169\.254\./.test(n.address)) out.push({ name, address: n.address });
     }
-    return null;
+    return out;
   };
+  const lanIp = () => {
+    const home = ipv4s().filter((n) => !isTailscale(n.name, n.address));
+    return (home.find((n) => /^(192\.168|10|172\.(1[6-9]|2\d|3[01]))\./.test(n.address)) || home[0] || {}).address || null;
+  };
+  const tailscaleIp = () => (ipv4s().find((n) => isTailscale(n.name, n.address)) || {}).address || null;
   const mobileToken = () => {
     if (!cfg().mobileToken) { cfg().mobileToken = crypto.randomBytes(12).toString('hex'); ctx.saveConfig(); }
     return cfg().mobileToken;
@@ -90,10 +100,12 @@ module.exports = function createExtras(ctx) {
   function info() {
     const c = cfg();
     const ip = lanIp();
+    const ts = tailscaleIp();
     return {
       overlayOn: !!c.overlayOn, mobileOn: !!c.mobileOn, port: port(), running: !!server,
       overlayUrl: `http://127.0.0.1:${port()}/overlay`,
       mobileUrl: ip ? `http://${ip}:${port()}/celular?t=${mobileToken()}` : null,
+      remoteUrl: ts ? `http://${ts}:${port()}/celular?t=${mobileToken()}` : null,
       backups: listBackups().slice(0, 10), backupDir: backupRoot(),
     };
   }
