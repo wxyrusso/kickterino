@@ -728,14 +728,21 @@ const POKE_TIPOS = ['xp', 'captura', 'shiny']; // mesma ordem de BONUSES (300, 5
 const PLATFORMS = ['twitch', 'kick'];
 const pokeBase = (platform) => ((config.pokeBonus || {})[platform] || {});
 
+// O jogo leva um tempo para aplicar um resgate: uma leitura logo depois da compra ainda pode vir sem
+// ela (foi assim que uma conta comprou duas vezes seguidas). Uma compra até 10 min antes da leitura
+// continua contando se o fim lido não a cobre: resgatar na hora t deixa o bônus até pelo menos t + 1 h.
+const GAME_LAG_MS = 10 * 60 * 1000;
 function bonusEnd(platform, i, now) {
   const base = pokeBase(platform);
   const since = Number(base.setAt) || 0;
   let end = Number(base[POKE_TIPOS[i]]) || 0;
   const buys = config.purchases
-    .filter((p) => (p.platform || 'kick') === platform && p.cost === BONUSES[i].cost && p.t > since)
+    .filter((p) => (p.platform || 'kick') === platform && p.cost === BONUSES[i].cost && p.t > since - GAME_LAG_MS)
     .sort((a, b) => a.t - b.t);
-  for (const p of buys) end = Math.max(end, p.t) + BONUS_MS;
+  for (const p of buys) {
+    if (p.t <= since && end >= p.t + BONUS_MS - 5 * 60 * 1000) continue; // a leitura do jogo já inclui esta compra
+    end = Math.max(end, p.t) + BONUS_MS;
+  }
   return end > now ? end : null;
 }
 
@@ -750,7 +757,15 @@ function setPokeBonus(platform, values, source) {
   const cur = { ...pokeBase(platform) };
   // Guarda primeiro o fim atual de TODOS (com as compras já somadas): mudar um bônus não apaga os outros.
   POKE_TIPOS.forEach((tipo, i) => { cur[tipo] = bonusEnd(platform, i, now) || 0; });
-  for (const tipo of POKE_TIPOS) if (tipo in values) cur[tipo] = Number(values[tipo]) || 0;
+  for (const tipo of POKE_TIPOS) {
+    if (!(tipo in values)) continue;
+    const before = cur[tipo];
+    cur[tipo] = Number(values[tipo]) || 0;
+    if (source === 'jogo' && Math.abs(cur[tipo] - before) > 2 * 60 * 1000 && (tipo !== 'shiny' || cur[tipo] || before)) {
+      const hm = (t) => (t > now ? new Date(t).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : 'desligado');
+      autoLog(`jogo: ${POKE_REDEEM_META[tipo].name} (${platformLabel(platform)}) ${hm(cur[tipo])} — o app achava ${hm(before)}`);
+    }
+  }
   cur.setAt = now;
   cur.source = source;
   config.pokeBonus = { ...(config.pokeBonus || {}), [platform]: cur };
@@ -801,13 +816,13 @@ const platformLabel = (platform) => (platform === 'kick' ? 'Kick' : 'Twitch');
 
 // Canais desta plataforma que pagam 1 h do bônus, ao vivo primeiro (com a live desligada, alguns canais
 // pausam as recompensas) e depois os com mais pontos. inUse = a conta tem saldo lido nesta plataforma.
-function autoChannels(platform, tipo) {
+function autoChannels(platform, tipo, reserve = true) {
   const cost = POKE_REDEEM_META[tipo].cost;
   const xpCost = POKE_REDEEM_META.xp.cost;
   const known = [...new Set(config.channels)].filter((slug) => platformOf(slug) === platform)
     .map((slug) => [slug, status.get(slug) || {}]).filter(([, st]) => typeof st.points === 'number');
   let rich = known.filter(([, st]) => st.points >= cost);
-  if (tipo !== 'xp' && autoOn('xp', platform)) {
+  if (reserve && tipo !== 'xp' && autoOn('xp', platform)) {
     rich = rich.filter(([slug, st]) => st.points - cost >= xpCost || known.some(([other, o]) => other !== slug && o.points >= xpCost));
   }
   rich.sort((a, b) => (!!b[1].live - !!a[1].live) || (b[1].points - a[1].points));
@@ -876,6 +891,39 @@ async function renewBonus({ tipo, platform, key, end }) {
     notify(`${label}: não consegui renovar`, `${(last && last.message) || 'Nenhum canal aceitou o resgate.'} Tento de novo em 10 min.`, showMain);
   }
 }
+
+// Comprar 1 h agora (bônus tocado no painel do celular): o mesmo resgate da renovação, sem esperar o
+// bônus acabar e sem guardar saldo para o XP (quem tocou decidiu gastar).
+async function buyBonusNow(tipo, platform) {
+  const meta = POKE_REDEEM_META[tipo];
+  if (!meta || !PLATFORMS.includes(platform)) return { error: 'Bônus inválido.' };
+  const where = platformLabel(platform);
+  for (let i = 0; i < 90 && autoBusy; i++) await delay(1000); // uma renovação automática em andamento
+  if (autoBusy) return { error: 'Uma renovação automática está rodando; tente de novo em 1 min.' };
+  const { inUse, rich } = autoChannels(platform, tipo, false);
+  if (!inUse) return { error: `Esta conta não tem saldo lido na ${where} (sem login?).` };
+  if (!rich.length) return { error: `Nenhum canal da ${where} tem ${meta.cost.toLocaleString('pt-BR')} pontos.` };
+  autoBusy = true;
+  try {
+    let last = null;
+    for (const [slug, st] of rich.slice(0, platform === 'twitch' ? 2 : 4)) {
+      const r = await withTimeout(redeemPokeBonusInChannel(slug, tipo), 2 * 60 * 1000)
+        .catch((e) => ({ status: 'failed', message: `demorou demais (${e && e.message || e})` }));
+      autoLog(`${meta.name} (${where}) pelo celular em ${slug}: ${r.status} — ${r.message || ''}`);
+      if (r.status === 'redeemed' || r.status === 'submitted') {
+        if (r.status === 'submitted') addKnownPurchase(slug, meta.cost, r.hours || 1, 'auto');
+        autoWaitUntil.set(`${platform}:${tipo}`, Date.now() + 10 * 60 * 1000);
+        send('status', snapshot());
+        return { ok: true, message: `comprei ${r.hours || 1} h de ${meta.name} na ${where}, no canal ${st.displayName || nameOf(slug)}.` };
+      }
+      last = r;
+    }
+    return { error: (last && last.message) || 'Nenhum canal aceitou o resgate.' };
+  } finally {
+    autoBusy = false;
+  }
+}
+ipcMain.handle('autobonus:buyNow', (_e, tipo, platform) => buyBonusNow(tipo, platform));
 
 ipcMain.handle('autobonus:set', (_e, tipo, platform, on) => {
   if (!AUTO_TIPOS.includes(tipo) || !PLATFORMS.includes(platform)) return snapshot();
@@ -1676,6 +1724,7 @@ function pokeAccountsSummary() {
 }
 
 // ---------- Destravar uma conta do PokeIdle (botões do painel do celular) ----------
+// Comprar = 1 h do bônus tocado, na conta e na plataforma dele (numa alt, roda no processo da alt).
 // Recarregar = o F5 do jogo da conta (se ela estiver fechada, abre). Resetar /hunt = apaga os ajustes
 // da extensão /hunt daquela conta (ordem, filtros, o ponto marcado com "Apontar" e as hunts medidas)
 // e recarrega. A extensão roda dentro da página: até a página recarregar, as gravações dela nessas
@@ -1696,7 +1745,7 @@ async function pokeOpenAndLoad(id) {
   for (let i = 0; i < 60 && wc.isLoading(); i++) await delay(500);
   return wc;
 }
-async function pokeFix(id, action) {
+async function pokeFix(id, action, opts = {}) {
   if (!pokeAccountIds().includes(id)) return { error: 'Conta desconhecida.' };
   const label = pokeLabel(id);
   if (action === 'reload') {
@@ -1713,6 +1762,13 @@ async function pokeFix(id, action) {
     pokeLastReload.set(id, Date.now());
     pokeXpSince.delete(id);
     return { ok: true, message: keys.length ? `${label}: zerei o /hunt (${keys.length} ajustes) e recarreguei o jogo.` : `${label}: o /hunt já estava zerado; recarreguei o jogo.` };
+  }
+  if (action === 'buy') {
+    const tipo = String(opts.tipo || '');
+    const platform = String(opts.plataforma || '');
+    const r = await (id === POKE_MAIN ? buyBonusNow(tipo, platform) : proxy(id, 'autobonus:buyNow', [tipo, platform], 4 * 60 * 1000))
+      .catch((e) => ({ error: String(e && e.message || e) }));
+    return r && r.message ? { ...r, message: `${label}: ${r.message}` } : r;
   }
   return { error: 'Ação desconhecida.' };
 }
@@ -2805,14 +2861,14 @@ function startCore(id) {
   return core;
 }
 
-function proxy(id, ch, args) {
+function proxy(id, ch, args, timeoutMs = 60 * 1000) {
   const core = altCores.get(id);
   if (!core || !core.connected || !core.sock) return Promise.reject(new Error('A conta ainda está abrindo, tente de novo em alguns segundos.'));
   const reqId = ++core.seq;
   return new Promise((resolve, reject) => {
     core.pending.set(reqId, { resolve, reject });
     try { core.sock.write(JSON.stringify({ id: reqId, ch, args }) + '\n'); } catch (e) { core.pending.delete(reqId); reject(e); }
-    setTimeout(() => { if (core.pending.has(reqId)) { core.pending.delete(reqId); reject(new Error('A conta não respondeu.')); } }, 60 * 1000);
+    setTimeout(() => { if (core.pending.has(reqId)) { core.pending.delete(reqId); reject(new Error('A conta não respondeu.')); } }, timeoutMs);
   });
 }
 

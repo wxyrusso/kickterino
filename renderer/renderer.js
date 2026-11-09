@@ -373,7 +373,7 @@ async function renderExtrasModal(message = '') {
 
   const cel = el('section', 'ex-sec');
   cel.append(el('h4', null, '📱 Painel no celular'),
-    el('p', null, 'Abra o link no navegador do celular, ligado ao mesmo Wi-Fi do PC: todas as contas, o estado de cada uma, os bônus e o farm. Cada conta do PokeIdle tem dois botões para destravar quando ela para de caçar: Recarregar (o F5 do jogo) e Resetar /hunt. O link tem uma chave só sua: não compartilhe.'),
+    el('p', null, 'Abra o link no navegador do celular, ligado ao mesmo Wi-Fi do PC: todas as contas, o estado de cada uma, os bônus e o farm. Em cada conta, tocar num bônus compra 1 h dele na hora, e há dois botões para destravar quando ela para de caçar: Recarregar (o F5 do jogo) e Resetar /hunt. O link tem uma chave só sua: não compartilhe.'),
     toggle('Ligar o painel no celular', info.mobileOn, (v) => window.kick.extrasSet({ mobileOn: v })));
   if (info.mobileOn) {
     cel.append(info.mobileUrl ? copyRow(info.mobileUrl) : el('p', 'ex-note', 'Não encontrei o PC na rede (sem Wi-Fi ou cabo?).'),

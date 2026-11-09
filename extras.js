@@ -2,9 +2,9 @@
 // Fica fora do main.js; recebe do main só o que precisa (dados para mostrar e onde gravar).
 //
 // - Overlay (OBS): http://127.0.0.1:<porta>/overlay — só responde no próprio PC.
-// - Painel no celular: http://<IP do PC na rede>:<porta>/celular?t=<chave> — mostra as contas e tem só
-//   dois botões por conta do PokeIdle (Recarregar e Resetar /hunt), protegido por uma chave aleatória;
-//   só fica na rede quando a pessoa liga.
+// - Painel no celular: http://<IP do PC na rede>:<porta>/celular?t=<chave> — mostra as contas; em cada
+//   uma, tocar num bônus compra 1 h dele, e há Recarregar e Resetar /hunt. Protegido por uma chave
+//   aleatória; só fica na rede quando a pessoa liga.
 // - Backups: cópia dos config.json de todas as contas (sem logins: os cookies não entram) numa
 //   pasta em Documentos, uma vez por dia, mantendo os 10 últimos.
 const http = require('http');
@@ -14,7 +14,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 module.exports = function createExtras(ctx) {
-  // ctx: { app, getConfig, saveConfig, data(), dataDirs(), relaunch(), action(conta, acao) }
+  // ctx: { app, getConfig, saveConfig, data(), dataDirs(), relaunch(), action(conta, acao, extra) }
   let server = null;
   let serverKey = '';
 
@@ -55,7 +55,7 @@ module.exports = function createExtras(ctx) {
       if (url.pathname === '/celular') return sendHtml(res, MOBILE_HTML);
       return sendJson(res, ctx.data('painel'));
     }
-    // Botões do painel: { conta, acao: 'reload' | 'hunt' } por POST, com a mesma chave do link.
+    // Botões do painel: { conta, acao: 'reload' | 'hunt' | 'buy', tipo, plataforma } por POST, com a mesma chave do link.
     if (url.pathname === '/api/acao') {
       const ok = c.mobileOn && req.method === 'POST' && url.searchParams.get('t') === mobileToken() && ctx.action;
       if (!ok) { res.writeHead(404); return res.end(); }
@@ -64,7 +64,7 @@ module.exports = function createExtras(ctx) {
       req.on('end', async () => {
         let msg = {};
         try { msg = JSON.parse(body || '{}'); } catch {}
-        const r = await Promise.resolve(ctx.action(String(msg.conta || ''), String(msg.acao || ''))).catch((e) => ({ error: String(e && e.message || e) }));
+        const r = await Promise.resolve(ctx.action(String(msg.conta || ''), String(msg.acao || ''), { tipo: String(msg.tipo || ''), plataforma: String(msg.plataforma || '') })).catch((e) => ({ error: String(e && e.message || e) }));
         sendJson(res, r || {});
       });
       return;
@@ -202,8 +202,10 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; } td { padding: 3px 2px; } td:last-child, td:nth-child(3) { text-align: right; }
   .acts { display: flex; gap: 8px; margin-top: 8px; }
   .acts button { flex: 1; font: inherit; font-size: 13px; padding: 9px 6px; border-radius: 10px; border: 1px solid var(--line); background: #1c2233; color: var(--txt); }
+  .bn { font: inherit; font-size: 12.5px; color: inherit; background: none; border: 1px solid var(--line); border-radius: 8px; padding: 5px 4px; width: 100%; text-align: inherit; }
+  .bn:disabled { opacity: .5; } .hint { color: var(--muted); font-size: 12px; font-weight: 500; margin: -6px 0 12px; }
   .acts button:disabled { opacity: .5; } .msg { font-size: 12px; margin-top: 6px; color: var(--accent); font-weight: 500; } .msg.err { color: #ff8f93; }
-</style></head><body><h1>🎮 TK MultiStream</h1><div class="sub" id="sub">Carregando…</div><div id="list"></div>
+</style></head><body><h1>🎮 TK MultiStream</h1><div class="sub" id="sub">Carregando…</div><div class="hint">Toque num bônus para comprar 1 h dele agora.</div><div id="list"></div>
 <script>
   const fmt = (ms) => { const m = Math.max(0, Math.ceil(ms / 60000)); const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60; return d ? d + 'd ' + h + 'h' : h ? h + 'h ' + String(mm).padStart(2, '0') + 'm' : mm + ' min'; };
   const NAMES = ['⚡ XP', '🎯 Capture', '✨ Lure'];
@@ -214,13 +216,17 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
     ['reload', '🔄 Recarregar', 'Recarregar o jogo da conta %s?'],
     ['hunt', '🧹 Resetar /hunt', 'Zerar o /hunt da conta %s (ordem, filtros, o ponto do Apontar e as hunts medidas) e recarregar o jogo?'],
   ];
+  // Tocar num bônus: compra 1 h dele, na plataforma da linha.
+  const TIPOS = ['xp', 'captura', 'shiny'];
+  const FULL = ['+15% XP', '+15% Capture Boost', '+15% Secret Lure'];
+  const COST = [300, 500, 1000];
   const msgs = {}, busy = {};
   let last = null;
-  async function agir(a, acao, pergunta) {
-    if (!confirm(pergunta.replace('%s', a.label))) return;
-    busy[a.id] = true; msgs[a.id] = { text: 'Enviando…' }; render();
+  async function agir(a, payload, pergunta, aguarde) {
+    if (!confirm(pergunta)) return;
+    busy[a.id] = true; msgs[a.id] = { text: aguarde || 'Enviando…' }; render();
     try {
-      const r = await (await fetch('/api/acao?t=' + encodeURIComponent(t), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conta: a.id, acao }) })).json();
+      const r = await (await fetch('/api/acao?t=' + encodeURIComponent(t), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ conta: a.id }, payload)) })).json();
       msgs[a.id] = r.error ? { text: r.error, err: true } : { text: r.message || 'Feito.' };
     } catch { msgs[a.id] = { text: 'Sem conexão com o PC.', err: true }; }
     busy[a.id] = false; render();
@@ -239,7 +245,16 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
       const tb = el('table');
       for (const [plat, cls, label] of [['twitch', 'tw', 'Twitch'], ['kick', 'kk', 'Kick']]) {
         const tr = el('tr'); tr.append(el('td', cls, label));
-        (a.bonus && a.bonus[plat] || [null, null, null]).forEach((end, i) => { const on = end && end > now; tr.append(el('td', on ? '' : 'muted', NAMES[i] + ' ' + (on ? fmt(end - now) : '—'))); });
+        (a.bonus && a.bonus[plat] || [null, null, null]).forEach((end, i) => {
+          const on = end && end > now;
+          const td = el('td', on ? '' : 'muted');
+          const b = el('button', 'bn', NAMES[i] + ' ' + (on ? fmt(end - now) : '—'));
+          b.disabled = !!busy[a.id];
+          b.onclick = () => agir(a, { acao: 'buy', tipo: TIPOS[i], plataforma: plat },
+            'Comprar 1 h de ' + FULL[i] + ' na ' + label + ' para a conta ' + a.label + '? Gasta ' + COST[i].toLocaleString('pt-BR') + ' pontos de um canal da ' + label + '.',
+            'Comprando ' + FULL[i] + ' na ' + label + '… (na Twitch leva até 1 min)');
+          td.append(b); tr.append(td);
+        });
         tb.append(tr);
       }
       box.append(tb);
@@ -247,7 +262,7 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
       for (const [acao, txt, pergunta] of ACTIONS) {
         const b = el('button', null, txt);
         b.disabled = !!busy[a.id];
-        b.onclick = () => agir(a, acao, pergunta);
+        b.onclick = () => agir(a, { acao }, pergunta.replace('%s', a.label));
         bar.append(b);
       }
       box.append(bar);
