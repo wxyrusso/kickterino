@@ -42,8 +42,8 @@ app.commandLine.appendSwitch('disable-background-media-suspend');
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,BackgroundVideoTrackOptimization,IntensiveWakeUpThrottling');
 // O JavaScript de cada página reserva menos memória "jovem".
 app.commandLine.appendSwitch('js-flags', '--max-semi-space-size=1');
-// As alts rodam por trás, sem nada na tela: sem placa de vídeo, cada uma gasta ~250 MB a menos.
-if (process.argv.includes('--tk-fundo')) app.disableHardwareAcceleration();
+// As alts ficam COM placa de vídeo: sem ela, a Kick pausa as recompensas da loja ("rewards are
+// temporarily paused") e o resgate automático para de funcionar.
 
 // Contas extras (alts): "--conta=alt1" abre uma cópia separada do app, com pasta de dados própria
 // (logins da Kick, da Twitch e do PokeIdle, canais, bônus e histórico só daquela conta). Cada cópia
@@ -807,7 +807,9 @@ async function checkAutoXp() {
   }
   autoXpBusy = true;
   try {
-    for (const [slug, st] of rich.slice(0, 8)) {
+    let paused = 0;
+    const tried = rich.slice(0, 8);
+    for (const [slug, st] of tried) {
       const name = st.displayName || nameOf(slug);
       autoXpLog(`tentando em ${slug}`);
       const r = await withTimeout(redeemPokeBonusInChannel(slug, 'xp'), 3 * 60 * 1000).catch((e) => ({ status: 'failed', message: `demorou demais (${e && e.message || e})` }));
@@ -821,13 +823,18 @@ async function checkAutoXp() {
         notify('+15% XP renovado', msg, showMain);
         return;
       }
+      if (r.reason === 'paused') paused++;
       if (r.reason === 'login-required') continue;
     }
-    // Nenhum dos canais com saldo deu certo: tenta de novo daqui a 10 min.
-    autoXpWaitUntil = Date.now() + 10 * 60 * 1000;
+    // A Kick pausou as recompensas em todos os canais: é um bloqueio da conta (a mesma loja, em outra
+    // conta, funciona). Não adianta insistir a cada 10 min: tenta de novo em 1 h.
+    const allPaused = paused === tried.length;
+    autoXpWaitUntil = Date.now() + (allPaused ? 60 : 10) * 60 * 1000;
     if (autoXpWarned !== end) {
       autoXpWarned = end;
-      notify('+15% XP: não consegui renovar', 'A loja não aceitou o resgate nos canais com mais pontos. Tento de novo em 10 min.', showMain);
+      notify('+15% XP: não consegui renovar', allPaused
+        ? 'A Kick está com as recompensas pausadas para esta conta em todos os canais. Tento de novo em 1 h.'
+        : 'A loja não aceitou o resgate nos canais com mais pontos. Tento de novo em 10 min.', showMain);
     }
   } finally {
     autoXpBusy = false;
@@ -1157,7 +1164,10 @@ async function redeemPokeBonusInChannel(slug, tipo, balanceBefore = null, shared
       return { slug, status: 'skipped', message: 'Não encontrei o botão de pontos/recompensas.' };
     }
     let selected = null;
-    for (let i = 0; i < 10 && !selected; i++) {
+    // A Kick mostra "recompensas pausadas" enquanto a lista ainda carrega: só conclui que está
+    // pausado se o aviso continuar depois de uns 12 s.
+    let pausedSeen = null;
+    for (let i = 0; i < 24 && !selected; i++) {
       await delay(i ? 500 : 900);
       const choice = await withTimeout(win.webContents.executeJavaScript(platformOf(slug) === 'twitch' ? twitchRedeemSelectScript(tipo, kickBefore) : pokeRedeemSelectScript(tipo)), 8 * 1000).catch(() => null);
       if (choice && choice.action === 'selected') selected = choice;
@@ -1170,9 +1180,10 @@ async function redeemPokeBonusInChannel(slug, tipo, balanceBefore = null, shared
       else if (choice && choice.action === 'too-expensive') {
         return { slug, status: 'skipped', message: `O pacote mais barato deste canal é de ${choice.hours} h por ${choice.cheapest.toLocaleString('pt-BR')} pontos; o saldo ainda não cobre.` };
       }
-      else if (choice && choice.action === 'paused') {
-        return { slug, status: 'skipped', reason: 'paused', panel: choice.panel || '', message: 'As recompensas deste canal estão pausadas pela Kick; passei para o próximo canal.' };
-      }
+      else if (choice && choice.action === 'paused') pausedSeen = choice;
+    }
+    if (!selected && pausedSeen) {
+      return { slug, status: 'skipped', reason: 'paused', panel: pausedSeen.panel || '', message: 'As recompensas deste canal estão pausadas pela Kick; passei para o próximo canal.' };
     }
     if (!selected) return { slug, status: 'skipped', message: 'Não achei uma recompensa PokeIdle disponível.' };
 
