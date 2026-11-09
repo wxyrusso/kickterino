@@ -102,6 +102,8 @@ const DEFAULT_CONFIG = {
   favorites: [],
   purchases: [],     // bônus comprados: { t, cost, slug } (cronômetro e relatório)
   daily: {},         // pontos ganhos por dia: { 'AAAA-MM-DD': pts }
+  dailyBy: {},       // o mesmo, separado por plataforma: { twitch: { dia: pts }, kick: { ... } }
+  autoBonus: null,   // bônus sempre ligados: { xp: { twitch, kick }, captura: { twitch, kick } }
   // App da própria pessoa no Twitch Developer Console (dev.twitch.tv/console/apps).
   twitchClientId: '',
   twitchClientSecret: '', // só para saber quem está ao vivo (token de app)
@@ -136,6 +138,13 @@ function loadConfig() {
     config.rotation = true;
     config.configVersion = 2;
   }
+  // O antigo "+15% XP sempre ligado" vira o XP marcado nas duas plataformas.
+  if (!config.autoBonus || typeof config.autoBonus !== 'object') {
+    const xp = !!config.autoXp;
+    config.autoBonus = { xp: { twitch: xp, kick: xp }, captura: { twitch: false, kick: false } };
+  }
+  delete config.autoXp;
+  if (!config.dailyBySince) config.dailyBySince = Date.now();
   saveConfig();
 }
 function saveConfig() {
@@ -657,9 +666,15 @@ let configDirty = false;
 
 const dayKey = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 
-function addDaily(n) {
+function addDaily(n, platform) {
   const k = dayKey(Date.now());
   config.daily[k] = (config.daily[k] || 0) + n;
+  if (platform) {
+    const by = config.dailyBy || (config.dailyBy = {});
+    const map = by[platform] || (by[platform] = {});
+    map[k] = (map[k] || 0) + n;
+    for (const d of Object.keys(map).sort().slice(0, -40)) delete map[d];
+  }
   configDirty = true;
 }
 
@@ -753,7 +768,7 @@ function checkBonusEnding() {
       if (!b.endsAt || b.endsAt - now > 5 * 60 * 1000 || warnedEnds.has(key)) continue;
       warnedEnds.add(key);
       if (!config.notifyBonus) continue;
-      if (config.autoXp && b.tipo === 'xp') continue; // a renovação automática cuida dele
+      if (autoOn(b.tipo, platform)) continue; // a renovação automática cuida dele
       // Sugere o canal da mesma plataforma com mais pontos que ainda paga esse bônus.
       const rich = config.channels.filter((slug) => platformOf(slug) === platform)
         .map((slug) => [slug, status.get(slug) || {}])
@@ -766,72 +781,134 @@ function checkBonusEnding() {
   }
 }
 
-// ---------- Renovação automática do +15% XP ----------
-// Faltando poucos minutos para o +15% XP acabar (na Twitch ou na Kick, o que acabar por último),
-// compra 1 h no canal desta conta com mais pontos. Cada conta (principal e alts) decide sozinha.
-const AUTOXP_BEFORE_MS = 6 * 60 * 1000;
-let autoXpBusy = false;
-let autoXpWaitUntil = 0;
-let autoXpWarned = 0;
+// ---------- Bônus sempre ligados (renovação automática) ----------
+// Para cada bônus marcado em ⚙ > Bônus (XP e/ou Capture, na Twitch e/ou na Kick), faltando 6 min para
+// ele acabar o app compra 1 h no canal desta conta com mais pontos naquela plataforma. Os pontos da
+// Twitch só compram bônus da Twitch e os da Kick só da Kick. Na mesma plataforma o XP tem prioridade:
+// o Capture só compra se, depois, ainda sobrar um canal com 300 pontos para a próxima hora de XP.
+const AUTO_TIPOS = ['xp', 'captura'];
+const AUTO_BEFORE_MS = 6 * 60 * 1000;
+const autoOn = (tipo, platform) => !!(config.autoBonus && config.autoBonus[tipo] && config.autoBonus[tipo][platform]);
+let autoBusy = false;
+const autoWaitUntil = new Map(); // 'twitch:xp' -> não tenta antes deste horário
+const autoWarned = new Map();    // 'twitch:xp' -> fim de bônus para o qual já avisou
 // Registro das tentativas (auto-xp.log na pasta de dados da conta), para saber por que não renovou.
-function autoXpLog(msg) {
+function autoLog(msg) {
   try { fs.appendFileSync(path.join(app.getPath('userData'), 'auto-xp.log'), `${new Date().toLocaleString('pt-BR')} ${msg}
 `); } catch {}
 }
-function xpEndsAt(now = Date.now()) {
-  return Math.max(bonusEnd('twitch', 0, now) || 0, bonusEnd('kick', 0, now) || 0);
+const platformLabel = (platform) => (platform === 'kick' ? 'Kick' : 'Twitch');
+
+// Canais desta plataforma que pagam 1 h do bônus, ao vivo primeiro (com a live desligada, alguns canais
+// pausam as recompensas) e depois os com mais pontos. inUse = a conta tem saldo lido nesta plataforma.
+function autoChannels(platform, tipo) {
+  const cost = POKE_REDEEM_META[tipo].cost;
+  const xpCost = POKE_REDEEM_META.xp.cost;
+  const known = [...new Set(config.channels)].filter((slug) => platformOf(slug) === platform)
+    .map((slug) => [slug, status.get(slug) || {}]).filter(([, st]) => typeof st.points === 'number');
+  let rich = known.filter(([, st]) => st.points >= cost);
+  if (tipo !== 'xp' && autoOn('xp', platform)) {
+    rich = rich.filter(([slug, st]) => st.points - cost >= xpCost || known.some(([other, o]) => other !== slug && o.points >= xpCost));
+  }
+  rich.sort((a, b) => (!!b[1].live - !!a[1].live) || (b[1].points - a[1].points));
+  return { inUse: known.length > 0, rich };
 }
-async function checkAutoXp() {
-  if (!config.autoXp || autoXpBusy || REDEEM_DRYRUN) return;
+
+async function checkAutoBonus() {
+  if (autoBusy || REDEEM_DRYRUN) return;
+  if ([...redeemJobs.values()].some((j) => j.status === 'running')) return; // o botão Resgatar está gastando os pontos
   const now = Date.now();
-  if (now < autoXpWaitUntil) return;
-  const end = xpEndsAt(now);
-  if (end - now > AUTOXP_BEFORE_MS) return;
-  if ([...redeemJobs.values()].some((j) => j.status === 'running')) { autoXpLog('esperando: um resgate manual está rodando'); return; }
-  const cost = POKE_REDEEM_META.xp.cost;
-  const rich = [...new Set(config.channels)]
-    .map((slug) => [slug, status.get(slug) || {}])
-    .filter(([, st]) => (st.points || 0) >= cost)
-    // Canais ao vivo primeiro: com a live desligada, muitos canais pausam as recompensas.
-    .sort((a, b) => (!!b[1].live - !!a[1].live) || (b[1].points - a[1].points));
-  autoXpLog(`bônus acaba em ${Math.round((end - now) / 60000)} min; canais com ${cost}+: ${rich.map(([sl, st]) => `${sl}=${st.points}`).join(', ') || 'nenhum'}`);
-  if (!rich.length) {
-    // Sem saldo em nenhum canal: avisa uma vez por fim de bônus e espera os pontos subirem.
-    if (autoXpWarned !== end) {
-      autoXpWarned = end;
-      notify('+15% XP: sem pontos para renovar', `Nenhum canal desta conta tem ${cost} pontos. Tento de novo quando algum tiver.`, showMain);
+  const due = [];
+  for (const tipo of AUTO_TIPOS) {
+    for (const platform of PLATFORMS) {
+      const key = `${platform}:${tipo}`;
+      if (!autoOn(tipo, platform) || now < (autoWaitUntil.get(key) || 0)) continue;
+      const end = bonusEnd(platform, POKE_TIPOS.indexOf(tipo), now) || 0;
+      if (end - now <= AUTO_BEFORE_MS) due.push({ tipo, platform, key, end });
     }
-    autoXpWaitUntil = now + 5 * 60 * 1000;
+  }
+  if (!due.length) return;
+  autoBusy = true;
+  try {
+    for (const d of due) await renewBonus(d);
+  } finally {
+    autoBusy = false;
+  }
+}
+
+async function renewBonus({ tipo, platform, key, end }) {
+  const meta = POKE_REDEEM_META[tipo];
+  const label = `${meta.name} (${platformLabel(platform)})`;
+  const { inUse, rich } = autoChannels(platform, tipo);
+  // Sem saldo lido em nenhum canal desta plataforma (conta sem login nela): nem tenta.
+  if (!inUse) { autoWaitUntil.set(key, Date.now() + 30 * 60 * 1000); return; }
+  const left = Math.round((end - Date.now()) / 60000);
+  autoLog(`${label}: ${end ? `acaba em ${left} min` : 'desligado'}; canais com saldo: ${rich.map(([sl, st]) => `${sl}=${st.points}`).join(', ') || 'nenhum'}`);
+  if (!rich.length) {
+    if (autoWarned.get(key) !== end) {
+      autoWarned.set(key, end);
+      notify(`${label}: sem pontos para renovar`, tipo === 'xp'
+        ? `Nenhum canal da ${platformLabel(platform)} tem ${meta.cost} pontos. Tento de novo quando algum tiver.`
+        : `Os pontos da ${platformLabel(platform)} estão guardados para o XP. Tento de novo quando sobrar.`, showMain);
+    }
+    autoWaitUntil.set(key, Date.now() + 5 * 60 * 1000);
     return;
   }
-  autoXpBusy = true;
-  try {
-    let last = null;
-    for (const [slug, st] of rich.slice(0, 8)) {
-      const name = st.displayName || nameOf(slug);
-      const r = await withTimeout(redeemPokeBonusInChannel(slug, 'xp'), 3 * 60 * 1000).catch((e) => ({ status: 'failed', message: `demorou demais (${e && e.message || e})` }));
-      autoXpLog(`${slug}: ${r.status} — ${r.message || ''}`);
-      if (r.status === 'redeemed' || r.status === 'submitted') {
-        // Twitch sem a confirmação no chat: anota a compra mesmo assim, para não comprar de novo logo em seguida.
-        if (r.status === 'submitted' && xpEndsAt() - Date.now() < 30 * 60 * 1000) addKnownPurchase(slug, cost, r.hours || 1, 'auto');
-        autoXpWaitUntil = Date.now() + 10 * 60 * 1000;
-        const msg = `Renovei o +15% XP por ${r.hours || 1} h no canal ${name} (${platformOf(slug) === 'kick' ? 'Kick' : 'Twitch'}).`;
-        send('toast', '🎁 ' + msg);
-        notify('+15% XP renovado', msg, showMain);
-        return;
+  let last = null;
+  for (const [slug, st] of rich.slice(0, platform === 'twitch' ? 4 : 8)) {
+    const r = await withTimeout(redeemPokeBonusInChannel(slug, tipo), 3 * 60 * 1000)
+      .catch((e) => ({ status: 'failed', message: `demorou demais (${e && e.message || e})` }));
+    autoLog(`${label} em ${slug}: ${r.status} — ${r.message || ''}`);
+    if (r.status === 'redeemed' || r.status === 'submitted') {
+      // Twitch sem a confirmação no chat: anota a compra mesmo assim, para não comprar de novo logo em seguida.
+      if (r.status === 'submitted' && (bonusEnd(platform, POKE_TIPOS.indexOf(tipo), Date.now()) || 0) - Date.now() < 30 * 60 * 1000) {
+        addKnownPurchase(slug, meta.cost, r.hours || 1, 'auto');
       }
-      last = r;
+      autoWaitUntil.set(key, Date.now() + 10 * 60 * 1000);
+      send('toast', `🎁 Renovei o ${label} por ${r.hours || 1} h no canal ${st.displayName || nameOf(slug)}.`);
+      return;
     }
-    autoXpWaitUntil = Date.now() + 10 * 60 * 1000;
-    if (autoXpWarned !== end) {
-      autoXpWarned = end;
-      notify('+15% XP: não consegui renovar', `${(last && last.message) || 'Nenhum canal aceitou o resgate.'} Tento de novo em 10 min.`, showMain);
-    }
-  } finally {
-    autoXpBusy = false;
+    last = r;
+  }
+  autoWaitUntil.set(key, Date.now() + 10 * 60 * 1000);
+  if (autoWarned.get(key) !== end) {
+    autoWarned.set(key, end);
+    notify(`${label}: não consegui renovar`, `${(last && last.message) || 'Nenhum canal aceitou o resgate.'} Tento de novo em 10 min.`, showMain);
   }
 }
-ipcMain.handle('autoxp:set', (_e, on) => { config.autoXp = !!on; saveConfig(); autoXpWaitUntil = 0; setTimeout(() => checkAutoXp().catch(() => {}), 2000); return snapshot(); });
+
+ipcMain.handle('autobonus:set', (_e, tipo, platform, on) => {
+  if (!AUTO_TIPOS.includes(tipo) || !PLATFORMS.includes(platform)) return snapshot();
+  config.autoBonus = { ...config.autoBonus, [tipo]: { ...(config.autoBonus || {})[tipo], [platform]: !!on } };
+  saveConfig();
+  autoWaitUntil.delete(`${platform}:${tipo}`);
+  autoWarned.delete(`${platform}:${tipo}`);
+  setTimeout(() => checkAutoBonus().catch(() => {}), 2000);
+  return snapshot();
+});
+
+// Quanto a conta ganha por dia em cada plataforma (média dos últimos dias completos; no primeiro dia,
+// o ritmo desde que começou a medir) e quanto tem guardado: base do cálculo em ⚙ > Bônus.
+function earnPerDay(platform) {
+  const map = (config.dailyBy || {})[platform] || {};
+  const since = Number(config.dailyBySince) || Date.now();
+  const today = dayKey(Date.now());
+  const full = Object.keys(map).filter((d) => d !== today && d !== dayKey(since)).sort().slice(-3);
+  if (full.length) return { perDay: Math.round(full.reduce((sum, d) => sum + map[d], 0) / full.length), days: full.length };
+  const hours = (Date.now() - since) / 3600000;
+  if (hours < 1) return null;
+  const total = Object.values(map).reduce((sum, n) => sum + n, 0);
+  return { perDay: Math.round((total / hours) * 24), days: 0, hours: Math.round(hours) };
+}
+function autoPlan() {
+  const plan = {};
+  for (const platform of PLATFORMS) {
+    const pts = [...new Set(config.channels)].filter((slug) => platformOf(slug) === platform)
+      .map((slug) => (status.get(slug) || {}).points).filter((p) => typeof p === 'number');
+    plan[platform] = { inUse: pts.length > 0, stock: pts.reduce((sum, p) => sum + p, 0), earn: earnPerDay(platform) };
+  }
+  return plan;
+}
 
 // ---------- Janela do PokeIdle ----------
 // O jogo só aceita UMA sessão por conta: o app não abre o jogo escondido (derrubaria o seu).
@@ -1116,7 +1193,7 @@ async function redeemTwitchBonus(slug, tipo, balanceBefore = null, sharedStore =
       if (!choice || choice.action === 'waiting') continue;
       if (choice.action === 'selected') selected = choice;
       else if (choice.action === 'target-missing') return { slug, status: 'skipped', reason: 'target-missing', message: `Este canal não vende o ${meta.name} do PokeIdle.` };
-      else if (choice.action === 'too-expensive') return { slug, status: 'skipped', reason: 'insufficient-points', message: `O pacote mais barato deste canal é de ${choice.hours} h por ${choice.cheapest.toLocaleString('pt-BR')} pontos; o saldo ainda não cobre.` };
+      else if (choice.action === 'too-expensive') return { slug, status: 'skipped', reason: 'insufficient-points', message: `O menor pacote deste canal é de ${choice.hours} h por ${choice.cheapest.toLocaleString('pt-BR')} pontos; não comprei.` };
       else if (choice.action === 'no-eligible') return { slug, status: 'skipped', message: 'A Twitch não deixa resgatar este pacote agora.' };
     }
     if (!selected) return { slug, status: 'skipped', message: 'A loja do chat da Twitch não mostrou as recompensas.' };
@@ -1155,10 +1232,10 @@ async function redeemTwitchBonus(slug, tipo, balanceBefore = null, sharedStore =
   }
 }
 
-// Um pacote do bônus no canal (a renovação automática usa este): 1 h na Kick; na Twitch, o maior
-// pacote que o saldo paga (alguns canais nem vendem 1 h).
+// 1 h do bônus no canal (a renovação automática usa este). Na Twitch, o preço de 1 h vira o teto da
+// escolha: canal que só vende pacotes maiores é pulado.
 function redeemPokeBonusInChannel(slug, tipo) {
-  return platformOf(slug) === 'kick' ? redeemKickBonus(slug, tipo, { maxHours: 1 }) : redeemTwitchBonus(slug, tipo);
+  return platformOf(slug) === 'kick' ? redeemKickBonus(slug, tipo, { maxHours: 1 }) : redeemTwitchBonus(slug, tipo, POKE_REDEEM_META[tipo].cost);
 }
 
 // Botão Resgatar: gasta no bônus tudo o que o saldo do canal pagar.
@@ -1865,7 +1942,7 @@ async function refreshChannel(slug) {
         if (s.points != null && p > s.points) {
           s.gainedTotal = (s.gainedTotal || 0) + (p - s.points);
           if (watchers.has(slug)) s.lastGainAt = Date.now();
-          addDaily(p - s.points);
+          addDaily(p - s.points, 'kick');
         }
         if (s.points != null && p < s.points) {
           let drop = s.points - p;
@@ -1957,7 +2034,7 @@ async function checkTwitchPage(slug, win, s) {
   if (!p.approx && s.points != null && !s.pointsApprox && p.value > s.points) {
     s.gainedTotal = (s.gainedTotal || 0) + (p.value - s.points);
     s.lastGainAt = Date.now();
-    addDaily(p.value - s.points);
+    addDaily(p.value - s.points, 'twitch');
   }
   // Saldo caiu (bônus comprado na loja da Twitch): entra no cronômetro, como na Kick. Com número
   // arredondado (acima de 1.000) só vale queda grande, e a combinação de bônus tem de bater.
@@ -2256,7 +2333,8 @@ function snapshot() {
     openAtLogin: isOpenAtLogin(),
     platform: process.platform,
     notifyBonus: config.notifyBonus,
-    autoXp: !!config.autoXp,
+    autoBonus: config.autoBonus,
+    autoPlan: autoPlan(),
     notifyChat: config.notifyChat,
     sleepMode: config.sleepMode,
     favorites: config.favorites,
@@ -3157,7 +3235,7 @@ app.whenReady().then(() => {
   scheduleTwitchSweep(90 * 1000); // primeira passada pelos saldos da Twitch logo depois de abrir
   setInterval(poll, POLL_MS);
   setInterval(() => send('status', snapshot()), 15 * 1000);
-  setInterval(() => { checkBonusEnding(); checkAutoXp().catch((e) => autoXpLog('erro: ' + (e && e.stack || e))); updateTray(); }, 30 * 1000);
+  setInterval(() => { checkBonusEnding(); checkAutoBonus().catch((e) => autoLog('erro: ' + (e && e.stack || e))); updateTray(); }, 30 * 1000);
   setTimeout(syncPartners, 30 * 1000);
   setInterval(syncPartners, 6 * 60 * 60 * 1000);
 });

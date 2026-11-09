@@ -212,3 +212,8 @@ body.poke-focus #accounts-bar { display: none !important; }
 .pk-settings-tab .pk-row select { background: var(--bg-2); color: var(--txt, #eef0f4); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; }
 .settings-modal .modal-actions { justify-content: flex-end; }
 #modal-card:has(.settings-modal) { overflow-x: hidden; }
+/* ⚙ > Bônus: tabela dos bônus sempre ligados */
+.auto-bonus { border-collapse: collapse; margin: 6px 2px 12px; font-size: 12.5px; }
+.auto-bonus th, .auto-bonus td { padding: 5px 16px 5px 0; text-align: center; }
+.auto-bonus th:first-child, .auto-bonus td:first-child { text-align: left; }
+.auto-bonus th { font-weight: 600; opacity: .8; }

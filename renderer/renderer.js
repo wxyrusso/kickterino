@@ -421,17 +421,70 @@ async function renderExtrasModal(message = '') {
 }
 $('#btn-extras').onclick = () => openSettings('extras');
 
-// Renovação automática do +15% XP (vale para a conta escolhida na barra).
-function buildAutoXpSettings() {
+// Bônus sempre ligados (vale para a conta escolhida na barra): XP e Capture, na Twitch e na Kick,
+// com o cálculo de quanto cada plataforma rende e quantas horas por dia isso paga.
+const AUTO_BONUS_ROWS = [['xp', '+15% XP', 300], ['captura', '+15% Capture', 500]];
+function buildAutoBonusSettings() {
   const acc = ((state.tk || {}).accounts || []).find((a) => a.id === currentAccount()) || {};
+  const auto = state.autoBonus || {};
+  const plan = state.autoPlan || {};
+  const fmt = (v) => Math.round(v).toLocaleString('pt-BR');
+  const dec = (v) => (Math.round(v * 10) / 10).toLocaleString('pt-BR');
   const det = el('div', 'pk-settings-tab');
-  det.append(el('p', 'settings-intro', 'Faltando 6 min para o +15% XP acabar, o app compra 1 h (300 pontos) no canal desta conta com mais pontos, na Twitch ou na Kick. Se nenhum canal tiver 300, ele avisa e tenta de novo depois.'));
-  const r = el('label', 'pk-row');
-  const c = el('input'); c.type = 'checkbox'; c.checked = !!state.autoXp;
-  c.onchange = async () => { applyState(await window.kick.setAutoXp(c.checked)); toast(c.checked ? '+15% XP: renovação automática ligada.' : '+15% XP: renovação automática desligada.'); };
-  r.append(c, el('span', null, `Manter o +15% XP sempre ligado nesta conta (${acc.label || 'Principal'})`));
-  det.append(r);
-  det.append(el('p', 'ex-note', 'Custa 7.200 pontos por dia por conta. Cada conta liga o seu: troque de conta na barra de cima para ligar nas alts.'));
+  det.append(el('p', 'settings-intro', `Faltando 6 min para um bônus marcado acabar, o app compra 1 h no canal com mais pontos daquela plataforma (conta ${acc.label || 'Principal'}). Pontos da Twitch só compram bônus da Twitch, e os da Kick só da Kick. Na mesma plataforma o XP vem primeiro: o Capture só compra se sobrar saldo para a próxima hora de XP.`));
+  const table = el('table', 'auto-bonus');
+  const head = el('tr');
+  head.append(el('th', null, 'Sempre ligado'), el('th', null, 'Twitch'), el('th', null, 'Kick'));
+  table.append(head);
+  for (const [tipo, name, cost] of AUTO_BONUS_ROWS) {
+    const tr = el('tr');
+    tr.append(el('td', null, `${name} · ${cost}/h`));
+    for (const platform of ['twitch', 'kick']) {
+      const td = el('td');
+      const c = el('input');
+      c.type = 'checkbox';
+      c.checked = !!(auto[tipo] && auto[tipo][platform]);
+      c.onchange = async () => {
+        applyState(await window.kick.setAutoBonus(tipo, platform, c.checked));
+        toast(`${name} na ${platform === 'twitch' ? 'Twitch' : 'Kick'}: ${c.checked ? 'sempre ligado' : 'renovação automática desligada'}.`);
+        det.replaceWith(buildAutoBonusSettings());
+      };
+      td.append(c);
+      tr.append(td);
+    }
+    table.append(tr);
+  }
+  det.append(table);
+  for (const platform of ['twitch', 'kick']) {
+    const label = platform === 'twitch' ? 'Twitch' : 'Kick';
+    const p = plan[platform];
+    const want = AUTO_BONUS_ROWS.filter(([tipo]) => auto[tipo] && auto[tipo][platform]);
+    if (!p || !p.inUse) {
+      if (want.length) det.append(el('p', 'ex-note', `${label}: nenhum saldo lido nesta conta (faça login na ${label}).`));
+      continue;
+    }
+    let line = `${label}: ${fmt(p.stock)} pontos guardados`;
+    if (!p.earn) {
+      line += '; ainda medindo quanto rende por dia.';
+    } else {
+      const per = p.earn.perDay;
+      line += ` · rende ~${fmt(per)}/dia${p.earn.days ? '' : ` (pelas últimas ${p.earn.hours} h)`}`;
+      if (want.length) {
+        const need = want.reduce((sum, [, , cost]) => sum + cost * 24, 0);
+        let left = per;
+        const parts = want.map(([, name, cost]) => {
+          const h = Math.min(24, left / cost);
+          left -= h * cost;
+          return `${name.replace('+15% ', '')} ${dec(h)} h`;
+        });
+        line += ` · ${want.map(([, name]) => name.replace('+15% ', '')).join(' + ')} 24 h custa ${fmt(need)}/dia → `;
+        line += per >= need
+          ? `dá para tudo, e sobram ${fmt(per - need)}/dia.`
+          : `o ganho paga ${parts.join(' + ')} por dia; com o guardado, fica tudo ligado por mais ~${dec(p.stock / (need - per))} dia(s).`;
+      }
+    }
+    det.append(el('p', 'ex-note', line));
+  }
   return det;
 }
 
@@ -456,7 +509,7 @@ function openSettings(tab = settingsTab) {
   wrap.append(actions);
   openModal('settings', wrap);
   if (tab === 'extras') renderExtrasModal();
-  else if (tab === 'bonus') body.append(buildAutoXpSettings());
+  else if (tab === 'bonus') body.append(buildAutoBonusSettings());
   else {
     body.append(el('p', 'settings-intro', tab === 'vigia'
       ? 'O vigia confere as contas do PokeIdle a cada minuto e avisa quando uma conta cai, desloga, trava ou fica sem ganhar XP. O aviso no PC é sempre feito; celular e Discord são opcionais.'
