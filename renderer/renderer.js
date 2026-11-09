@@ -419,10 +419,24 @@ async function renderExtrasModal(message = '') {
 }
 $('#btn-extras').onclick = () => openSettings('extras');
 
+// Renovação automática do +15% XP (vale para a conta escolhida na barra).
+function buildAutoXpSettings() {
+  const acc = ((state.tk || {}).accounts || []).find((a) => a.id === currentAccount()) || {};
+  const det = el('div', 'pk-settings-tab');
+  det.append(el('p', 'settings-intro', 'Faltando 6 min para o +15% XP acabar, o app compra 1 h (300 pontos) no canal desta conta com mais pontos, na Twitch ou na Kick. Se nenhum canal tiver 300, ele avisa e tenta de novo depois.'));
+  const r = el('label', 'pk-row');
+  const c = el('input'); c.type = 'checkbox'; c.checked = !!state.autoXp;
+  c.onchange = async () => { applyState(await window.kick.setAutoXp(c.checked)); toast(c.checked ? '+15% XP: renovação automática ligada.' : '+15% XP: renovação automática desligada.'); };
+  r.append(c, el('span', null, `Manter o +15% XP sempre ligado nesta conta (${acc.label || 'Principal'})`));
+  det.append(r);
+  det.append(el('p', 'ex-note', 'Custa 7.200 pontos por dia por conta. Cada conta liga o seu: troque de conta na barra de cima para ligar nas alts.'));
+  return det;
+}
+
 // ---------- ⚙ Configurações ----------
 // Tudo que é ajuste num lugar só, aberto pela engrenagem da barra de contas.
 let settingsTab = 'vigia';
-const SETTINGS_TABS = [['vigia', '🚨 Vigia e avisos'], ['economia', '⚡ Economia'], ['extras', '🧰 Extras']];
+const SETTINGS_TABS = [['bonus', '🎁 Bônus'], ['vigia', '🚨 Vigia e avisos'], ['economia', '⚡ Economia'], ['extras', '🧰 Extras']];
 function openSettings(tab = settingsTab) {
   settingsTab = tab;
   const wrap = el('div', 'settings-modal');
@@ -440,6 +454,7 @@ function openSettings(tab = settingsTab) {
   wrap.append(actions);
   openModal('settings', wrap);
   if (tab === 'extras') renderExtrasModal();
+  else if (tab === 'bonus') body.append(buildAutoXpSettings());
   else {
     body.append(el('p', 'settings-intro', tab === 'vigia'
       ? 'O vigia confere as contas do PokeIdle a cada minuto e avisa quando uma conta cai, desloga, trava ou fica sem ganhar XP. O aviso no PC é sempre feito; celular e Discord são opcionais.'

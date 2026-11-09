@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('kick', {
   pokeSetMode: (id, mode) => ipcRenderer.invoke('poke:setMode', id, mode),
   pokeSettings: (patch) => ipcRenderer.invoke('poke:settings', patch),
   pokeTestAlert: () => ipcRenderer.invoke('poke:testAlert'),
+  setAutoXp: (on) => ipcRenderer.invoke('autoxp:set', on),
   extrasInfo: () => ipcRenderer.invoke('extras:info'),
   extrasSet: (patch) => ipcRenderer.invoke('extras:set', patch),
   extrasBackup: () => ipcRenderer.invoke('extras:backup'),

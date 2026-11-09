@@ -754,6 +754,7 @@ function checkBonusEnding() {
       if (!b.endsAt || b.endsAt - now > 5 * 60 * 1000 || warnedEnds.has(key)) continue;
       warnedEnds.add(key);
       if (!config.notifyBonus) continue;
+      if (config.autoXp && b.tipo === 'xp') continue; // a renovação automática cuida dele
       // Sugere o canal da mesma plataforma com mais pontos que ainda paga esse bônus.
       const rich = config.channels.filter((slug) => platformOf(slug) === platform)
         .map((slug) => [slug, status.get(slug) || {}])
@@ -765,6 +766,65 @@ function checkBonusEnding() {
     }
   }
 }
+
+// ---------- Renovação automática do +15% XP ----------
+// Faltando poucos minutos para o +15% XP acabar (na Twitch ou na Kick, o que acabar por último),
+// compra 1 h no canal desta conta com mais pontos. Cada conta (principal e alts) decide sozinha.
+const AUTOXP_BEFORE_MS = 6 * 60 * 1000;
+let autoXpBusy = false;
+let autoXpWaitUntil = 0;
+let autoXpWarned = 0;
+function xpEndsAt(now = Date.now()) {
+  return Math.max(bonusEnd('twitch', 0, now) || 0, bonusEnd('kick', 0, now) || 0);
+}
+async function checkAutoXp() {
+  if (!config.autoXp || autoXpBusy || REDEEM_DRYRUN) return;
+  const now = Date.now();
+  if (now < autoXpWaitUntil) return;
+  const end = xpEndsAt(now);
+  if (end - now > AUTOXP_BEFORE_MS) return;
+  if ([...redeemJobs.values()].some((j) => j.status === 'running')) return;
+  const cost = POKE_REDEEM_META.xp.cost;
+  const rich = [...new Set(config.channels)]
+    .map((slug) => [slug, status.get(slug) || {}])
+    .filter(([, st]) => (st.points || 0) >= cost)
+    .sort((a, b) => b[1].points - a[1].points);
+  if (!rich.length) {
+    // Sem saldo em nenhum canal: avisa uma vez por fim de bônus e espera os pontos subirem.
+    if (autoXpWarned !== end) {
+      autoXpWarned = end;
+      notify('+15% XP: sem pontos para renovar', `Nenhum canal desta conta tem ${cost} pontos. Tento de novo quando algum tiver.`, showMain);
+    }
+    autoXpWaitUntil = now + 5 * 60 * 1000;
+    return;
+  }
+  autoXpBusy = true;
+  try {
+    for (const [slug, st] of rich.slice(0, 3)) {
+      const name = st.displayName || nameOf(slug);
+      const r = await redeemPokeBonusInChannel(slug, 'xp');
+      if (r.status === 'redeemed' || r.status === 'submitted') {
+        // Se a compra ainda não apareceu (a loja não confirmou a tempo), anota a 1 h para não comprar de novo.
+        if (xpEndsAt() - Date.now() < 30 * 60 * 1000) addKnownPurchase(slug, cost, 1, 'auto');
+        autoXpWaitUntil = Date.now() + 10 * 60 * 1000;
+        const msg = `Renovei o +15% XP por 1 h no canal ${name} (${platformOf(slug) === 'kick' ? 'Kick' : 'Twitch'}).`;
+        send('toast', '🎁 ' + msg);
+        notify('+15% XP renovado', msg, showMain);
+        return;
+      }
+      if (r.reason === 'login-required') continue;
+    }
+    // Nenhum dos 3 canais com mais pontos deu certo: tenta de novo daqui a 10 min.
+    autoXpWaitUntil = Date.now() + 10 * 60 * 1000;
+    if (autoXpWarned !== end) {
+      autoXpWarned = end;
+      notify('+15% XP: não consegui renovar', 'A loja não aceitou o resgate nos canais com mais pontos. Tento de novo em 10 min.', showMain);
+    }
+  } finally {
+    autoXpBusy = false;
+  }
+}
+ipcMain.handle('autoxp:set', (_e, on) => { config.autoXp = !!on; saveConfig(); autoXpWaitUntil = 0; setTimeout(() => checkAutoXp().catch(() => {}), 2000); return snapshot(); });
 
 // ---------- Janela do PokeIdle ----------
 // O jogo só aceita UMA sessão por conta: o app não abre o jogo escondido (derrubaria o seu).
@@ -2260,6 +2320,7 @@ function snapshot() {
     openAtLogin: isOpenAtLogin(),
     platform: process.platform,
     notifyBonus: config.notifyBonus,
+    autoXp: !!config.autoXp,
     notifyChat: config.notifyChat,
     sleepMode: config.sleepMode,
     favorites: config.favorites,
@@ -3160,7 +3221,7 @@ app.whenReady().then(() => {
   scheduleTwitchSweep(90 * 1000); // primeira passada pelos saldos da Twitch logo depois de abrir
   setInterval(poll, POLL_MS);
   setInterval(() => send('status', snapshot()), 15 * 1000);
-  setInterval(() => { checkBonusEnding(); updateTray(); }, 30 * 1000);
+  setInterval(() => { checkBonusEnding(); checkAutoXp().catch(() => {}); updateTray(); }, 30 * 1000);
   setTimeout(syncPartners, 30 * 1000);
   setInterval(syncPartners, 6 * 60 * 60 * 1000);
 });
