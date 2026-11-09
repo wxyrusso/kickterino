@@ -2,8 +2,9 @@
 // Fica fora do main.js; recebe do main só o que precisa (dados para mostrar e onde gravar).
 //
 // - Overlay (OBS): http://127.0.0.1:<porta>/overlay — só responde no próprio PC.
-// - Painel no celular: http://<IP do PC na rede>:<porta>/celular?t=<chave> — só leitura (nenhum
-//   botão muda nada), protegido por uma chave aleatória; só fica na rede quando a pessoa liga.
+// - Painel no celular: http://<IP do PC na rede>:<porta>/celular?t=<chave> — mostra as contas e tem só
+//   dois botões por conta do PokeIdle (Recarregar e Resetar /hunt), protegido por uma chave aleatória;
+//   só fica na rede quando a pessoa liga.
 // - Backups: cópia dos config.json de todas as contas (sem logins: os cookies não entram) numa
 //   pasta em Documentos, uma vez por dia, mantendo os 10 últimos.
 const http = require('http');
@@ -13,7 +14,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 module.exports = function createExtras(ctx) {
-  // ctx: { app, getConfig, saveConfig, data(), dataDirs(), relaunch() }
+  // ctx: { app, getConfig, saveConfig, data(), dataDirs(), relaunch(), action(conta, acao) }
   let server = null;
   let serverKey = '';
 
@@ -53,6 +54,20 @@ module.exports = function createExtras(ctx) {
       if (!ok) { res.writeHead(404); return res.end(); }
       if (url.pathname === '/celular') return sendHtml(res, MOBILE_HTML);
       return sendJson(res, ctx.data('painel'));
+    }
+    // Botões do painel: { conta, acao: 'reload' | 'hunt' } por POST, com a mesma chave do link.
+    if (url.pathname === '/api/acao') {
+      const ok = c.mobileOn && req.method === 'POST' && url.searchParams.get('t') === mobileToken() && ctx.action;
+      if (!ok) { res.writeHead(404); return res.end(); }
+      let body = '';
+      req.on('data', (d) => { body += d; if (body.length > 2000) req.destroy(); });
+      req.on('end', async () => {
+        let msg = {};
+        try { msg = JSON.parse(body || '{}'); } catch {}
+        const r = await Promise.resolve(ctx.action(String(msg.conta || ''), String(msg.acao || ''))).catch((e) => ({ error: String(e && e.message || e) }));
+        sendJson(res, r || {});
+      });
+      return;
     }
     res.writeHead(404); res.end();
   }
@@ -185,32 +200,66 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
   .chip.ok { background: var(--accent); color: #0b1a1f; } .chip.bad { background: #e5484d; color: #fff; }
   .line { font-size: 13px; color: var(--muted); margin: 3px 0 6px; font-weight: 500; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; } td { padding: 3px 2px; } td:last-child, td:nth-child(3) { text-align: right; }
+  .acts { display: flex; gap: 8px; margin-top: 8px; }
+  .acts button { flex: 1; font: inherit; font-size: 13px; padding: 9px 6px; border-radius: 10px; border: 1px solid var(--line); background: #1c2233; color: var(--txt); }
+  .acts button:disabled { opacity: .5; } .msg { font-size: 12px; margin-top: 6px; color: var(--accent); font-weight: 500; } .msg.err { color: #ff8f93; }
 </style></head><body><h1>🎮 TK MultiStream</h1><div class="sub" id="sub">Carregando…</div><div id="list"></div>
 <script>
   const fmt = (ms) => { const m = Math.max(0, Math.ceil(ms / 60000)); const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60; return d ? d + 'd ' + h + 'h' : h ? h + 'h ' + String(mm).padStart(2, '0') + 'm' : mm + ' min'; };
   const NAMES = ['⚡ XP', '🎯 Capture', '✨ Lure'];
   const el = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
-  async function tick() {
-    const t = new URLSearchParams(location.search).get('t');
+  const t = new URLSearchParams(location.search).get('t');
+  // Destravar uma conta que parou de caçar: o F5 do jogo, ou zerar os ajustes do /hunt e recarregar.
+  const ACTIONS = [
+    ['reload', '🔄 Recarregar', 'Recarregar o jogo da conta %s?'],
+    ['hunt', '🧹 Resetar /hunt', 'Zerar o /hunt da conta %s (ordem, filtros, o ponto do Apontar e as hunts medidas) e recarregar o jogo?'],
+  ];
+  const msgs = {}, busy = {};
+  let last = null;
+  async function agir(a, acao, pergunta) {
+    if (!confirm(pergunta.replace('%s', a.label))) return;
+    busy[a.id] = true; msgs[a.id] = { text: 'Enviando…' }; render();
     try {
-      const d = await (await fetch('/api/painel?t=' + encodeURIComponent(t), { cache: 'no-store' })).json();
-      const now = Date.now();
-      document.getElementById('sub').textContent = 'Farm ' + (d.farming ? 'ligado' : 'pausado') + ' · ' + d.assistindo + ' lives assistindo · atualizado ' + new Date().toLocaleTimeString('pt-BR');
-      const list = document.getElementById('list'); list.textContent = '';
-      for (const a of d.contas) {
-        const box = el('div', 'acc' + (a.problem ? ' bad' : ''));
-        const h = el('h2'); h.append(el('span', null, a.label + (a.nick ? ' · ' + a.nick : '')));
-        const st = !a.open ? ['fechada', ''] : a.problem === 'deslogou' ? ['deslogou', 'bad'] : a.problem === 'parada' ? ['sem XP', 'bad'] : a.logged ? ['caçando', 'ok'] : ['sem login', ''];
-        h.append(el('span', 'chip ' + st[1], st[0])); box.append(h);
-        box.append(el('div', 'line', [a.level ? 'Nv ' + a.level : '', a.xpH ? Math.round(a.xpH / 1000) + ' mil XP/h' : '', a.gold ? '💰 ' + a.gold : ''].filter(Boolean).join(' · ') || ' '));
-        const tb = el('table');
-        for (const [plat, cls, label] of [['twitch', 'tw', 'Twitch'], ['kick', 'kk', 'Kick']]) {
-          const tr = el('tr'); tr.append(el('td', cls, label));
-          (a.bonus && a.bonus[plat] || [null, null, null]).forEach((end, i) => { const on = end && end > now; tr.append(el('td', on ? '' : 'muted', NAMES[i] + ' ' + (on ? fmt(end - now) : '—'))); });
-          tb.append(tr);
-        }
-        box.append(tb); list.append(box);
+      const r = await (await fetch('/api/acao?t=' + encodeURIComponent(t), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conta: a.id, acao }) })).json();
+      msgs[a.id] = r.error ? { text: r.error, err: true } : { text: r.message || 'Feito.' };
+    } catch { msgs[a.id] = { text: 'Sem conexão com o PC.', err: true }; }
+    busy[a.id] = false; render();
+    setTimeout(tick, 15000);
+  }
+  function render() {
+    const d = last; if (!d) return;
+    const now = Date.now();
+    const list = document.getElementById('list'); list.textContent = '';
+    for (const a of d.contas) {
+      const box = el('div', 'acc' + (a.problem ? ' bad' : ''));
+      const h = el('h2'); h.append(el('span', null, a.label + (a.nick ? ' · ' + a.nick : '')));
+      const st = !a.open ? ['fechada', ''] : a.problem === 'deslogou' ? ['deslogou', 'bad'] : a.problem === 'parada' ? ['sem XP', 'bad'] : a.logged ? ['caçando', 'ok'] : ['sem login', ''];
+      h.append(el('span', 'chip ' + st[1], st[0])); box.append(h);
+      box.append(el('div', 'line', [a.level ? 'Nv ' + a.level : '', a.xpH ? Math.round(a.xpH / 1000) + ' mil XP/h' : '', a.gold ? '💰 ' + a.gold : ''].filter(Boolean).join(' · ') || ' '));
+      const tb = el('table');
+      for (const [plat, cls, label] of [['twitch', 'tw', 'Twitch'], ['kick', 'kk', 'Kick']]) {
+        const tr = el('tr'); tr.append(el('td', cls, label));
+        (a.bonus && a.bonus[plat] || [null, null, null]).forEach((end, i) => { const on = end && end > now; tr.append(el('td', on ? '' : 'muted', NAMES[i] + ' ' + (on ? fmt(end - now) : '—'))); });
+        tb.append(tr);
       }
+      box.append(tb);
+      const bar = el('div', 'acts');
+      for (const [acao, txt, pergunta] of ACTIONS) {
+        const b = el('button', null, txt);
+        b.disabled = !!busy[a.id];
+        b.onclick = () => agir(a, acao, pergunta);
+        bar.append(b);
+      }
+      box.append(bar);
+      if (msgs[a.id]) box.append(el('div', 'msg' + (msgs[a.id].err ? ' err' : ''), msgs[a.id].text));
+      list.append(box);
+    }
+  }
+  async function tick() {
+    try {
+      last = await (await fetch('/api/painel?t=' + encodeURIComponent(t), { cache: 'no-store' })).json();
+      document.getElementById('sub').textContent = 'Farm ' + (last.farming ? 'ligado' : 'pausado') + ' · ' + last.assistindo + ' lives assistindo · atualizado ' + new Date().toLocaleTimeString('pt-BR');
+      render();
     } catch { document.getElementById('sub').textContent = 'Sem conexão com o PC.'; }
   }
   tick(); setInterval(tick, 10000);

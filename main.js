@@ -1675,6 +1675,48 @@ function pokeAccountsSummary() {
   });
 }
 
+// ---------- Destravar uma conta do PokeIdle (botões do painel do celular) ----------
+// Recarregar = o F5 do jogo da conta (se ela estiver fechada, abre). Resetar /hunt = apaga os ajustes
+// da extensão /hunt daquela conta (ordem, filtros, o ponto marcado com "Apontar" e as hunts medidas)
+// e recarrega. A extensão roda dentro da página: até a página recarregar, as gravações dela nessas
+// chaves ficam bloqueadas, para ela não regravar o que acabou de ser apagado.
+const HUNT_RESET_SCRIPT = `(() => {
+  const keys = [];
+  for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('pokeidle-hunt:')) keys.push(k); }
+  keys.forEach((k) => localStorage.removeItem(k));
+  const setItem = Storage.prototype.setItem;
+  Storage.prototype.setItem = function (k, v) { if (String(k).startsWith('pokeidle-hunt:')) return; return setItem.call(this, k, v); };
+  setTimeout(() => location.reload(), 50);
+  return keys;
+})()`;
+async function pokeOpenAndLoad(id) {
+  if (!pokeIsOpen(id)) { await ensurePokeView(id); applyPokeBounds(); }
+  if (!pokeIsOpen(id)) return null;
+  const wc = pokeViews.get(id).webContents;
+  for (let i = 0; i < 60 && wc.isLoading(); i++) await delay(500);
+  return wc;
+}
+async function pokeFix(id, action) {
+  if (!pokeAccountIds().includes(id)) return { error: 'Conta desconhecida.' };
+  const label = pokeLabel(id);
+  if (action === 'reload') {
+    if (pokeIsOpen(id)) { pokeLastReload.set(id, Date.now()); pokeViews.get(id).webContents.reload(); }
+    else if (!(await pokeOpenAndLoad(id))) return { error: 'Não consegui abrir o jogo desta conta.' };
+    pokeXpSince.delete(id);
+    return { ok: true, message: `${label}: recarreguei o jogo.` };
+  }
+  if (action === 'hunt') {
+    const wc = await pokeOpenAndLoad(id);
+    if (!wc) return { error: 'Não consegui abrir o jogo desta conta.' };
+    const keys = await withTimeout(wc.executeJavaScript(HUNT_RESET_SCRIPT), 10 * 1000).catch(() => null);
+    if (!keys) return { error: 'O jogo desta conta não respondeu.' };
+    pokeLastReload.set(id, Date.now());
+    pokeXpSince.delete(id);
+    return { ok: true, message: keys.length ? `${label}: zerei o /hunt (${keys.length} ajustes) e recarreguei o jogo.` : `${label}: o /hunt já estava zerado; recarreguei o jogo.` };
+  }
+  return { error: 'Ação desconhecida.' };
+}
+
 ipcMain.handle('poke:setMode', async (_e, id, mode) => {
   if (pokeAccountIds().includes(id) && POKE_MODES[mode]) {
     config.pokeModes = { ...(config.pokeModes || {}), [id]: mode };
@@ -2875,7 +2917,7 @@ function relaunchAll() {
 }
 function startExtras() {
   extras = require('./extras')({
-    app, getConfig: () => config, saveConfig, data: extrasData, dataDirs: extrasDataDirs, relaunch: relaunchAll,
+    app, getConfig: () => config, saveConfig, data: extrasData, dataDirs: extrasDataDirs, relaunch: relaunchAll, action: pokeFix,
   });
   extras.sync();
   extras.autoBackup();
