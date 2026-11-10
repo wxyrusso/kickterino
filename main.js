@@ -114,9 +114,39 @@ const DEFAULT_CONFIG = {
 let config = { ...DEFAULT_CONFIG };
 let firstRun = false;
 
+// A config é gravada o tempo todo. Se o PC desliga no meio de uma gravação, o arquivo fica pela metade
+// (10/11/2026: queda de energia às 11:18; a principal abriu zerada, sem as alts, e gravou o padrão por
+// cima). Agora: a gravação vai para um .tmp, é forçada para o disco e só então troca o arquivo; e uma
+// config que não lê nunca é regravada por cima: ela fica guardada à parte (.quebrado-<hora>) e o app
+// volta da última cópia boa (config.json.bak, refeita a cada abertura e de hora em hora, ou o backup diário).
+let configBakAt = 0;
+let configRecoveredFrom = null;
+function readConfigFile(file) {
+  try { const o = JSON.parse(fs.readFileSync(file, 'utf8')); return o && typeof o === 'object' && !Array.isArray(o) ? o : null; } catch { return null; }
+}
+function dailyBackupConfigs() {
+  try {
+    const root = path.join(app.getPath('documents'), 'TK MultiStream', 'backups');
+    const name = `${ACCOUNT || 'principal'}.json`;
+    return fs.readdirSync(root).filter((d) => /^\d{4}-\d{2}-\d{2}_\d{4}$/.test(d)).sort().reverse().map((d) => path.join(root, d, name));
+  } catch { return []; }
+}
 function loadConfig() {
-  firstRun = !fs.existsSync(configPath());
-  try { config = { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(configPath(), 'utf8')) }; } catch {}
+  const file = configPath();
+  firstRun = !fs.existsSync(file) && !fs.existsSync(file + '.bak');
+  let saved = fs.existsSync(file) ? readConfigFile(file) : null;
+  if (saved) {
+    try { fs.copyFileSync(file, file + '.bak'); configBakAt = Date.now(); } catch {}
+  } else if (!firstRun) {
+    if (fs.existsSync(file)) { try { fs.renameSync(file, `${file}.quebrado-${Date.now()}`); } catch {} }
+    for (const f of [file + '.bak', ...dailyBackupConfigs()]) {
+      saved = fs.existsSync(f) ? readConfigFile(f) : null;
+      if (saved) { configRecoveredFrom = f; break; }
+    }
+    try { fs.appendFileSync(path.join(app.getPath('userData'), 'config.log'), `${new Date().toLocaleString('pt-BR')} config.json não lia; ${configRecoveredFrom ? 'voltei de ' + configRecoveredFrom : 'nenhuma cópia boa, comecei do padrão'}\n`); } catch {}
+    if (configRecoveredFrom) setTimeout(() => { try { notify(APP_TITLE, 'A configuração estava estragada (o PC desligou no meio de uma gravação?). Voltei da última cópia boa.'); } catch {} }, 8000);
+  }
+  if (saved) config = { ...DEFAULT_CONFIG, ...saved };
   // Conta alt nova: começa com a lista de canais e o app da Twitch da conta principal (os logins não).
   if (firstRun && ACCOUNT) {
     try {
@@ -148,7 +178,18 @@ function loadConfig() {
   saveConfig();
 }
 function saveConfig() {
-  fs.writeFileSync(configPath(), JSON.stringify(config, null, 2));
+  const file = configPath();
+  const data = JSON.stringify(config, null, 2);
+  const tmp = file + '.tmp';
+  try {
+    const fd = fs.openSync(tmp, 'w');
+    try { fs.writeSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.renameSync(tmp, file);
+  } catch {
+    try { fs.writeFileSync(file, data); } catch {} // troca recusada (arquivo preso por antivírus?): grava direto
+    return;
+  }
+  if (Date.now() - configBakAt > 60 * 60 * 1000) { configBakAt = Date.now(); try { fs.copyFileSync(file, file + '.bak'); } catch {} }
 }
 
 let mainWin = null;
