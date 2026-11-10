@@ -1704,6 +1704,9 @@ async function reopenPokeAccount(id, motivo) {
   pokeAlert(id, 'reaberta', `A página da conta ${motivo}; o app abriu de novo.`);
 }
 
+const FRAG_NOMES = { fragChave: 'Fragmento de Chave', fragShiny: 'Fragmento de Pedra Shiny', fragBicicleta: 'Fragmento de Bicicleta',
+  fragMega: 'Fragmento de Pedra Mega', fragMegaShiny: 'Fragmento de Pedra Mega Shiny', fragOvoShiny: 'Fragmento de Ovo Shiny' };
+const pokeFragSeen = new Map(); // conta -> { itens, sessMs } da última leitura com placar
 async function watchPokeAccount(id) {
   if (!pokeIsOpen(id)) { pokeInfo.delete(id); pokeHiddenSince.delete(id); return; }
   const now = Date.now();
@@ -1727,6 +1730,19 @@ async function watchPokeAccount(id) {
   if (prev.shinies != null && info.shinies != null && (info.sessMs || 0) >= (prev.sessMs || 0)) {
     if (info.shinies > prev.shinies) pokeShout(id, `✨ Pegou um SHINY! Já são ${info.shinies} nesta sessão.`);
     else if (info.shiniesVistos > prev.shiniesVistos) pokeShout(id, '✨ Apareceu um shiny na hunt (ainda não capturado).');
+  }
+  // Fragmento que caiu (chave, pedra shiny, bicicleta, mega, mega shiny, ovo shiny): avisa. Compara com a
+  // última leitura que teve placar (um F5 no meio não perde o drop). Placar com menos tempo = sessão nova,
+  // começada depois daquela leitura: tudo o que está nele caiu agora. Ao abrir o app (sem leitura antes), não avisa.
+  if (info.itens) {
+    const base = pokeFragSeen.get(id);
+    if (base) {
+      const antes = (info.sessMs || 0) >= (base.sessMs || 0) ? base.itens : {};
+      const caiu = Object.keys(FRAG_NOMES).filter((k) => (info.itens[k] || 0) > (antes[k] || 0))
+        .map((k) => { const d = info.itens[k] - (antes[k] || 0); return `${d > 1 ? d + '× ' : ''}${FRAG_NOMES[k]} (${info.itens[k]} na sessão)`; });
+      if (caiu.length) pokeShout(id, `🧩 Caiu ${caiu.join(' · ')}!`);
+    }
+    pokeFragSeen.set(id, { itens: info.itens, sessMs: info.sessMs || 0 });
   }
   // XP parado: o placar da sessão não sobe há X minutos (com a conta logada).
   if (info.sessXp != null) {
