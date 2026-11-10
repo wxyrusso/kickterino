@@ -65,7 +65,7 @@ module.exports = function createExtras(ctx) {
       if (url.pathname === '/celular') return sendHtml(res, MOBILE_HTML);
       return sendJson(res, ctx.data('painel'));
     }
-    // Botões do painel: { conta, acao: 'reload' | 'hunt' | 'buy', tipo, plataforma } por POST, com a mesma chave do link.
+    // Botões do painel: { conta, acao: 'reload' | 'hunt' | 'buy' | 'seguir', tipo, plataforma, ligar } por POST, com a mesma chave do link.
     if (url.pathname === '/api/acao') {
       const ok = c.mobileOn && req.method === 'POST' && url.searchParams.get('t') === mobileToken() && ctx.action;
       if (!ok) { res.writeHead(404); return res.end(); }
@@ -74,7 +74,7 @@ module.exports = function createExtras(ctx) {
       req.on('end', async () => {
         let msg = {};
         try { msg = JSON.parse(body || '{}'); } catch {}
-        const r = await Promise.resolve(ctx.action(String(msg.conta || ''), String(msg.acao || ''), { tipo: String(msg.tipo || ''), plataforma: String(msg.plataforma || '') })).catch((e) => ({ error: String(e && e.message || e) }));
+        const r = await Promise.resolve(ctx.action(String(msg.conta || ''), String(msg.acao || ''), { tipo: String(msg.tipo || ''), plataforma: String(msg.plataforma || ''), ligar: msg.ligar === true })).catch((e) => ({ error: String(e && e.message || e) }));
         sendJson(res, r || {});
       });
       return;
@@ -217,8 +217,9 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
   .acts button { flex: 1; font: inherit; font-size: 13px; padding: 9px 6px; border-radius: 10px; border: 1px solid var(--line); background: #1c2233; color: var(--txt); }
   .bn { font: inherit; font-size: 12.5px; color: inherit; background: none; border: 1px solid var(--line); border-radius: 8px; padding: 5px 4px; width: 100%; text-align: inherit; }
   .bn:disabled { opacity: .5; } .hint { color: var(--muted); font-size: 12px; font-weight: 500; margin: -6px 0 12px; }
+  .acts button.on { border-color: #ffd34d; color: #ffd34d; }
   .acts button:disabled { opacity: .5; } .msg { font-size: 12px; margin-top: 6px; color: var(--accent); font-weight: 500; } .msg.err { color: #ff8f93; }
-</style></head><body><h1>🎮 TK MultiStream</h1><div class="sub" id="sub">Carregando…</div><div class="hint">Toque num bônus para comprar 1 h dele agora.</div><div id="list"></div>
+</style></head><body><h1>🎮 TK MultiStream</h1><div class="sub" id="sub">Carregando…</div><div class="hint">Toque num bônus para comprar 1 h dele agora.</div><div class="hint shiny" id="shiny"></div><div id="list"></div>
 <script>
   const fmt = (ms) => { const m = Math.max(0, Math.ceil(ms / 60000)); const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60; return d ? d + 'd ' + h + 'h' : h ? h + 'h ' + String(mm).padStart(2, '0') + 'm' : mm + ' min'; };
   const NAMES = ['⚡ XP', '🎯 Capture', '✨ Lure'];
@@ -250,6 +251,8 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
   function render() {
     const d = last; if (!d) return;
     const now = Date.now();
+    const u = d.ultimoShiny;
+    document.getElementById('shiny').textContent = u ? '✨ Último shiny do jogo: ' + u.nome + ' de ' + u.nick + ' · há ' + fmt(now - u.at) : '';
     const list = document.getElementById('list'); list.textContent = '';
     for (const a of d.contas) {
       const box = el('div', 'acc' + (a.problem ? ' bad' : ''));
@@ -257,6 +260,17 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
       const st = !a.open ? ['fechada', ''] : a.problem === 'deslogou' ? ['deslogou', 'bad'] : a.problem === 'parada' ? ['sem XP', 'bad'] : a.logged ? ['caçando', 'ok'] : ['sem login', ''];
       h.append(el('span', 'chip ' + st[1], st[0])); box.append(h);
       box.append(el('div', 'line', [a.level ? 'Nv ' + a.level : '', a.xpH ? Math.round(a.xpH / 1000) + ' mil XP/h' : '', a.gold ? '💰 ' + a.gold : ''].filter(Boolean).join(' · ') || ' '));
+      if (a.hunt) box.append(el('div', 'line', '📍 ' + a.hunt));
+      // Estoque: as bolas da automação e as poções que a conta tem.
+      if (a.inv) {
+        const POC = { 200: 'Small Potion', 201: 'Great Potion', 202: 'Ultra Potion', 203: 'Hyper Potion', 204: 'Ultimate Potion' };
+        const bolas = (a.inv.ballIds || []).map((id) => { const b = (a.inv.bolas || []).find((x) => x.id === id); return n(a.inv.balls[id]) + ' ' + (b ? b.nome : 'bola ' + id); });
+        const poc = Object.entries(a.inv.pocoes || {}).filter((e) => e[1] > 0).map(([k, v]) => n(v) + ' ' + (POC[k] || k));
+        const it = bolas.concat(poc);
+        if (it.length) box.append(el('div', 'line', '🎒 ' + it.join(' · ')));
+      }
+      if (a.compra && now - a.compra.at < 2 * 3600e3) box.append(el('div', 'line', '🛒 ' + new Date(a.compra.at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + ': ' + a.compra.texto));
+      if (a.seguir && a.seguir.st) { const s = a.seguir.st; box.append(el('div', 'line shiny', '✨ Na hunt do shiny de ' + s.nome + ' (pego por ' + s.nick + ') · volta em ' + fmt(s.ate - now))); }
       if (a.ativo && (a.ativo.nome || a.ativo.level)) {
         const pk = el('div', 'line stats');
         pk.append(el('span', null, '🐾 '), el('span', a.ativo.shiny ? 'shiny' : null, (a.ativo.shiny ? '✨ ' : '') + (a.ativo.nome || 'Pokémon')),
@@ -297,6 +311,16 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
         bar.append(b);
       }
       box.append(bar);
+      // Seguir shiny: vai para a hunt do Pokémon que alguém acabou de pegar shiny, por 30 min.
+      const sg = a.seguir || {};
+      const bar2 = el('div', 'acts');
+      const bs = el('button', sg.on ? 'on' : null, sg.on ? '✨ Seguindo shiny (toque para parar)' : '✨ Seguir shiny');
+      bs.disabled = !!busy[a.id];
+      bs.onclick = () => agir(a, { acao: 'seguir', ligar: !sg.on }, sg.on
+        ? 'Parar de seguir shiny na conta ' + a.label + '? Se ela estiver na hunt de um shiny, volta para a hunt de antes.'
+        : 'Seguir shiny na conta ' + a.label + '? Quando alguém pegar um shiny no jogo, ela vai para a hunt desse Pokémon por 30 min (ou até sair outro shiny) e depois volta para onde estava.');
+      bar2.append(bs);
+      box.append(bar2);
       if (msgs[a.id]) box.append(el('div', 'msg' + (msgs[a.id].err ? ' err' : ''), msgs[a.id].text));
       list.append(box);
     }

@@ -1447,6 +1447,7 @@ function attachPokeReader(wc, id) {
   dbg.on('message', (_e, method, p) => {
     if (method !== 'Network.webSocketFrameReceived') return;
     const text = p.response && p.response.payloadData;
+    if (text && text.length < 20000 && text.slice(0, 40).includes('"t":"shiny.captura"')) { onShinyBroadcast(text); return; }
     // Só mensagens que falam de twitch/kick (o jogo manda muita coisa por segundo).
     if (!text || text.length > 2_000_000 || !/"(twitch|kick)"/.test(text) || !text.includes('"bonus"')) return;
     let msg;
@@ -1647,10 +1648,28 @@ const POKE_READ_SCRIPT = `(() => {
       xpPct: Number.isFinite(pct) ? Math.max(0, Math.min(100, Math.round(pct))) : null,
     };
   }
+  // Onde a conta está caçando: o estado do jogo que a extensão /hunt guarda (o nome vem das hunts do welcome).
+  let hunt = null, inv = null;
+  try {
+    const P = globalThis.__pokeidleHunt;
+    if (P && typeof P.on === 'function') {
+      const ult = (tipo) => { let v = null; const off = P.on(tipo, (d) => { v = d; }); if (typeof off === 'function') off(); return v; };
+      const e = ult('estado'), w = ult('welcome');
+      const h = e && e.huntSlug && w && Array.isArray(w.hunts) ? w.hunts.find((x) => x.slug === e.huntSlug) : null;
+      if (e) hunt = e.safari && e.safari.dentro ? 'Safari' : e.casa && e.casa.dentro ? 'casa' : e.boss && e.boss.arena ? 'arena de boss' : e.mistico ? 'área mística' : e.noCentro ? 'Centro Pokémon' : h ? (h.nome || h.slug) : e.huntSlug || null;
+      if (e) {
+        const num = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k, Number(v) || 0]));
+        const it = num(e.items);
+        inv = { gold: Number(e.gold) || 0, balls: num(e.balls), pocoes: Object.fromEntries(['200', '201', '202', '203', '204'].map((k) => [k, it[k] || 0])),
+          ballIds: (e.automation && Array.isArray(e.automation.ballIds) ? e.automation.ballIds : []).map(Number), autoPotion: !!(e.automation && e.automation.autoPotion),
+          bolas: (w && Array.isArray(w.catalogoBolas) ? w.catalogoBolas : []).map((b) => ({ id: Number(b.id), nome: b.nome, preco: Number(b.priceGold) || 0, compravel: !!b.compravel })) };
+      }
+    }
+  } catch {}
   return {
     logged: (!!app && !app.classList.contains('hidden')) || token,
     loginScreen: !token && !!q('input[type="password"]'),
-    nick, level: txt('#tr-level'), gold: txt('#tr-gold'), xp: txt('#tr-xp-txt'), sess, ativo,
+    nick, level: txt('#tr-level'), gold: txt('#tr-gold'), xp: txt('#tr-xp-txt'), sess, ativo, hunt, inv,
     mode: document.documentElement.classList.contains('modo-ultra') ? 'ultra'
       : localStorage.getItem('cfg-economia') === '1' ? 'economia' : localStorage.getItem('cfg-otimizado') === '1' ? 'otimizado' : 'cena',
   };
@@ -1703,7 +1722,7 @@ async function watchPokeAccount(id) {
     mode: r.mode, xpH: r.sess && r.sess.ms > 60000 ? Math.round(r.sess.xp / r.sess.ms * 3600e3) : null, sessXp: r.sess ? r.sess.xp : null,
     abates: r.sess ? r.sess.abates : null, capturas: r.sess ? r.sess.capturas : null, shinies: r.sess ? r.sess.shinies : null,
     shiniesVistos: r.sess ? r.sess.shiniesVistos : null, bossTokens: r.sess ? r.sess.bossTokens : null, itens: r.sess ? r.sess.itens : null,
-    sessMs: r.sess ? r.sess.ms : null, ativo: r.logged ? (r.ativo || prev.ativo || null) : null, problem: null };
+    sessMs: r.sess ? r.sess.ms : null, ativo: r.logged ? (r.ativo || prev.ativo || null) : null, hunt: r.logged ? (r.hunt || null) : null, inv: r.logged ? (r.inv || null) : null, problem: null };
   // Shiny na mesma sessão de caça (o placar só sobe; se ele voltou a zero, é uma sessão nova): avisa.
   if (prev.shinies != null && info.shinies != null && (info.sessMs || 0) >= (prev.sessMs || 0)) {
     if (info.shinies > prev.shinies) pokeShout(id, `✨ Pegou um SHINY! Já são ${info.shinies} nesta sessão.`);
@@ -1744,7 +1763,8 @@ function pokeAccountsSummary() {
     const i = pokeInfo.get(id) || {};
     return { id, label: pokeLabel(id), open: pokeIsOpen(id), mode: pokeChosenMode(id), modeNow: i.mode || null,
       nick: i.nick || null, level: i.level || null, gold: i.gold || null, xpH: i.xpH, abates: i.abates, capturas: i.capturas,
-      shinies: i.shinies, shiniesVistos: i.shiniesVistos, bossTokens: i.bossTokens, itens: i.itens || null, sessMs: i.sessMs, ativo: i.ativo || null,
+      shinies: i.shinies, shiniesVistos: i.shiniesVistos, bossTokens: i.bossTokens, itens: i.itens || null, sessMs: i.sessMs, ativo: i.ativo || null, hunt: i.hunt || null, inv: i.inv || null, compra: ultimaCompra.get(id) || null,
+      seguir: { on: !!shinyFollowCfg().contas[id], st: (({ nome, nick, huntNome, ate } = {}) => (ate ? { nome, nick, huntNome, ate } : null))(shinyFollowCfg().estado[id]) },
       logged: i.logged ?? null, problem: i.problem || null, readAt: i.at || null };
   });
 }
@@ -1796,7 +1816,297 @@ async function pokeFix(id, action, opts = {}) {
       .catch((e) => ({ error: String(e && e.message || e) }));
     return r && r.message ? { ...r, message: `${label}: ${r.message}` } : r;
   }
+  if (action === 'seguir') {
+    const c = shinyFollowCfg();
+    if (opts.ligar) c.contas[id] = true; else delete c.contas[id];
+    saveConfig();
+    setImmediate(() => shinyFollowTick().catch((e) => shinyLog('erro: ' + (e && e.stack || e))));
+    shinyLog(`${label}: seguir shiny ${opts.ligar ? 'ligado' : 'desligado'} pelo celular`);
+    if (opts.ligar) {
+      const u = shinyAlvo();
+      return { ok: true, message: `${label}: seguir shiny ligado. ` + (u ? `Indo para a hunt de ${u.nome} (shiny de ${u.nick}).` : 'Vai para a hunt do próximo shiny que alguém pegar.') };
+    }
+    return { ok: true, message: `${label}: seguir shiny desligado.` + (c.estado[id] ? ' Voltando para a hunt de antes.' : '') };
+  }
   return { error: 'Ação desconhecida.' };
+}
+
+// ---------- Seguir shiny ----------
+// Quando alguém no jogo captura um shiny, o servidor avisa todo mundo ("shiny.captura", com o
+// Pokémon). As contas marcadas vão para a hunt desse Pokémon por 30 min; um shiny novo troca o alvo
+// e, sem shiny novo, a conta volta para a hunt em que estava antes de começar a seguir. Não muda a
+// chance (1 em 24.000 por captura, igual para qualquer Pokémon): é por diversão.
+// A troca é a mesma mensagem que o botão do Mapa do jogo manda (hunt.select), pela conexão do
+// próprio jogo. As hunts (welcome) e o lugar da conta (estado) vêm do que a extensão /hunt guarda.
+const SHINY_SEGUIR_MS = 30 * 60 * 1000;
+const shinySeen = new Map();    // aviso -> quando (as 4 contas recebem o mesmo aviso)
+const shinyTratado = new Map(); // conta -> shiny (at) já resolvido nela (sem hunt liberada, recusas)
+const shinyFalhas = new Map();  // conta -> tentativas seguidas que o jogo recusou
+let shinyBusy = false;
+let shinyAgain = false;
+
+function shinyLog(msg) {
+  try { fs.appendFileSync(path.join(app.getPath('userData'), 'shiny-seguir.log'), `${new Date().toLocaleString('pt-BR')} ${msg}\n`); } catch {}
+}
+function shinyFollowCfg() {
+  const c = config.shinyFollow && typeof config.shinyFollow === 'object' ? config.shinyFollow : {};
+  if (!c.contas || typeof c.contas !== 'object') c.contas = {};
+  if (!c.estado || typeof c.estado !== 'object') c.estado = {};
+  config.shinyFollow = c;
+  return c;
+}
+const shinyAlvo = (now = Date.now()) => { const u = shinyFollowCfg().ultimo; return u && now - u.at < SHINY_SEGUIR_MS ? u : null; };
+
+// Lê, na página da conta: a hunt atual, se está num lugar especial (Safari, casa, arena...), o nível
+// do treinador e, com um Pokémon, a hunt liberada onde ele mais aparece.
+const shinyLerScript = (speciesId) => `(() => {
+  const P = globalThis.__pokeidleHunt;
+  if (!P || typeof P.on !== 'function') return { erro: 'a extensão /hunt não está carregada' };
+  const ultimo = (tipo) => { let v = null; const off = P.on(tipo, (d) => { v = d; }); if (typeof off === 'function') off(); return v; };
+  const w = ultimo('welcome'), eu = ultimo('estado');
+  if (!w || !Array.isArray(w.hunts) || !eu) return { erro: 'o jogo ainda está carregando' };
+  const lugar = eu.safari && eu.safari.dentro ? 'Safari' : eu.casa && eu.casa.dentro ? 'casa' : eu.boss && eu.boss.arena ? 'arena' : eu.mistico ? 'místico' : eu.noCentro ? 'Centro Pokémon' : null;
+  const out = { huntSlug: eu.huntSlug || null, lugar, level: Number(eu.level) || 0, hunt: null, existe: 0 };
+  const alvo = ${Number(speciesId) || 0};
+  if (alvo) {
+    const opcoes = (id) => w.hunts.filter((h) => (h.especies || []).some((e) => Number(e.pokeId) === id)).map((h) => {
+      const esp = h.especies || [];
+      const total = esp.reduce((s, e) => s + (Number(e.pontos) || 0), 0);
+      const meu = esp.filter((e) => Number(e.pokeId) === id).reduce((s, e) => s + (Number(e.pontos) || 0), 0);
+      return { slug: h.slug, nome: h.nome || h.slug, nivel: Number(h.nivel) || 0, parte: total ? meu / total : 0 };
+    });
+    let lista = opcoes(alvo);
+    if (!lista.length && alvo >= 13000) lista = opcoes(alvo % 1000); // o clone de Orre: a espécie nacional
+    const livres = lista.filter((h) => h.nivel <= out.level).sort((a, b) => b.parte - a.parte || b.nivel - a.nivel);
+    out.existe = lista.length;
+    out.hunt = livres[0] || null;
+    if (!out.hunt && lista.length) out.menorNivel = Math.min(...lista.map((h) => h.nivel));
+  }
+  return out;
+})()`;
+
+// Troca de hunt pela conexão do jogo. A conexão é pega no próximo envio dele (o jogo manda um ping a
+// cada 25 s); a troca vale quando o estado da conta mostra a hunt nova.
+const shinyIrScript = (slug) => `(async () => {
+  const slug = ${JSON.stringify(String(slug))};
+  if (!window.__tkWsHook) {
+    const orig = WebSocket.prototype.send;
+    WebSocket.prototype.send = function () {
+      try { if (new URL(this.url, location.href).host === location.host) window.__tkGameWs = this; } catch {}
+      return orig.apply(this, arguments);
+    };
+    window.__tkWsHook = true;
+  }
+  const P = globalThis.__pokeidleHunt;
+  const aqui = () => { let v = null; if (P && typeof P.on === 'function') { const off = P.on('estado', (d) => { v = d; }); if (typeof off === 'function') off(); } return v ? v.huntSlug : undefined; };
+  if (aqui() === slug) return { ok: true, ja: true };
+  const t0 = Date.now();
+  while (Date.now() - t0 < 35000) {
+    const ws = window.__tkGameWs;
+    if (ws && ws.readyState === 1) break;
+    if (ws && ws.readyState > 1) window.__tkGameWs = null;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  const ws = window.__tkGameWs;
+  if (!ws || ws.readyState !== 1) return { ok: false, erro: 'sem conexão com o jogo' };
+  ws.send(JSON.stringify({ t: 'hunt.select', slug }));
+  for (let i = 0; i < 16; i++) { await new Promise((r) => setTimeout(r, 500)); if (aqui() === slug) return { ok: true }; }
+  return { ok: false, erro: 'o jogo não trocou de hunt (trava de troca?)' };
+})()`;
+
+function onShinyBroadcast(text) {
+  let m;
+  try { m = JSON.parse(text); } catch { return; }
+  const p = m && m.pokemon;
+  const sid = Number(p && p.speciesId);
+  if (!sid) return;
+  const now = Date.now();
+  const key = p.id != null ? `id:${p.id}` : `${m.nick}:${sid}`;
+  for (const [k, t] of shinySeen) if (now - t > 10 * 60 * 1000) shinySeen.delete(k);
+  if (shinySeen.has(key)) return;
+  shinySeen.set(key, now);
+  const nome = String(p.nome || `#${sid}`).slice(0, 60);
+  const nick = String(m.nick || '?').slice(0, 40);
+  if (m.ovo) { shinyLog(`shiny de ovo (não conta): ${nome} de ${nick}`); return; }
+  shinyFollowCfg().ultimo = { speciesId: sid, nome, nick, at: now };
+  saveConfig();
+  shinyLog(`shiny no jogo: ${nome} (#${sid}) de ${nick}`);
+  setImmediate(() => shinyFollowTick().catch((e) => shinyLog('erro: ' + (e && e.stack || e))));
+}
+
+async function shinyFollowTick() {
+  if (ACCOUNT) return;
+  if (shinyBusy) { shinyAgain = true; return; }
+  shinyBusy = true;
+  try {
+    const c = shinyFollowCfg();
+    for (const id of pokeAccountIds()) {
+      if (!pokeIsOpen(id)) continue;
+      const wc = pokeViews.get(id).webContents;
+      if (wc.isLoading()) continue;
+      const now = Date.now();
+      const on = !!c.contas[id];
+      const st = c.estado[id] || null;
+      const label = pokeLabel(id);
+      // Desligou, ou passaram 30 min sem shiny novo: volta para a hunt de antes.
+      if (st && (!on || now >= st.ate)) { await shinyVoltar(id, wc, st, on ? 'passaram 30 min sem shiny novo' : 'desligou o seguir shiny'); continue; }
+      const alvo = shinyAlvo(now);
+      if (!on || !alvo || (st && st.alvoAt === alvo.at) || shinyTratado.get(id) === alvo.at) continue;
+      const info = await withTimeout(wc.executeJavaScript(shinyLerScript(alvo.speciesId)), 10 * 1000).catch(() => null);
+      if (!info || info.erro || info.lugar) continue; // carregando, ou no Safari/casa/arena/Centro: tenta no próximo giro
+      if (!info.hunt) {
+        shinyTratado.set(id, alvo.at);
+        shinyLog(`${label}: ${alvo.nome} ${info.existe ? `só em hunt de nível ${info.menorNivel} (conta no ${info.level})` : 'não aparece em nenhuma hunt'}; fica onde está`);
+        continue;
+      }
+      let r = { ok: true };
+      if (info.huntSlug !== info.hunt.slug) r = await withTimeout(wc.executeJavaScript(shinyIrScript(info.hunt.slug)), 50 * 1000).catch((e) => ({ ok: false, erro: String(e && e.message || e) }));
+      if (!r || !r.ok) {
+        const n = (shinyFalhas.get(id) || 0) + 1;
+        shinyFalhas.set(id, n);
+        shinyLog(`${label}: não foi para ${info.hunt.nome} (${r && r.erro || 'sem resposta'}), tentativa ${n}`);
+        if (n >= 3) { shinyTratado.set(id, alvo.at); shinyFalhas.delete(id); }
+        continue;
+      }
+      shinyFalhas.delete(id);
+      c.estado[id] = { voltar: st ? st.voltar : info.huntSlug, slug: info.hunt.slug, huntNome: info.hunt.nome, speciesId: alvo.speciesId, nome: alvo.nome, nick: alvo.nick, alvoAt: alvo.at, ate: now + SHINY_SEGUIR_MS };
+      saveConfig();
+      pokeXpSince.delete(id); // hunt nova: o placar recomeça, não é "parada"
+      shinyLog(`${label}: foi para ${info.hunt.nome} (${Math.round(info.hunt.parte * 100)}% ${alvo.nome}), shiny de ${alvo.nick}`);
+    }
+  } finally {
+    shinyBusy = false;
+    if (shinyAgain) { shinyAgain = false; setImmediate(() => shinyFollowTick().catch((e) => shinyLog('erro: ' + (e && e.stack || e)))); }
+  }
+}
+
+async function shinyVoltar(id, wc, st, motivo) {
+  const c = shinyFollowCfg();
+  const label = pokeLabel(id);
+  const info = await withTimeout(wc.executeJavaScript(shinyLerScript(0)), 10 * 1000).catch(() => null);
+  if (!info || info.erro) return;
+  // A conta saiu da hunt do shiny por conta própria (ou já estava nela antes): não mexe.
+  if (!st.voltar || st.voltar === st.slug || info.huntSlug !== st.slug) {
+    delete c.estado[id]; saveConfig();
+    shinyLog(`${label}: parou de seguir (${motivo})${st.voltar && info.huntSlug !== st.slug && st.voltar !== st.slug ? '; já estava em outra hunt, ficou nela' : ''}`);
+    return;
+  }
+  if (info.lugar) return;
+  const r = await withTimeout(wc.executeJavaScript(shinyIrScript(st.voltar)), 50 * 1000).catch((e) => ({ ok: false, erro: String(e && e.message || e) }));
+  if (r && r.ok) {
+    delete c.estado[id]; saveConfig();
+    pokeXpSince.delete(id);
+    shinyLog(`${label}: voltou para a hunt de antes (${motivo})`);
+    return;
+  }
+  st.falhas = (st.falhas || 0) + 1;
+  shinyLog(`${label}: não conseguiu voltar (${r && r.erro || 'sem resposta'}), tentativa ${st.falhas}`);
+  if (st.falhas >= 5) { delete c.estado[id]; shinyLog(`${label}: desisti de voltar; ficou em ${st.huntNome}`); }
+  saveConfig();
+}
+
+// ---------- Compra automática de bolas e poções ----------
+// Quando o estoque de uma conta cai abaixo de 1.000: compra o máximo da bola (o "Máx" da loja: até
+// 9.999, o teto do servidor, ou o que o ouro paga) e 2.500 poções. A bola é a melhor que a automação
+// da conta usa e a loja vende (hoje Ultra Ball); a Poke Ball marcada mas zerada fica de fora, senão a
+// conta passaria a jogar a bola fraca. A poção é a que a conta usa: a de maior estoque (lembrada para
+// quando zerar). A compra é a mesma mensagem da Loja do jogo (shop.buy), pela conexão do jogo, e vale
+// quando o estoque sobe.
+const POCOES_LOJA = { 200: ['Small Potion', 50], 201: ['Great Potion', 150], 202: ['Ultra Potion', 400], 203: ['Hyper Potion', 800], 204: ['Ultimate Potion', 1500] };
+const compraTentou = new Map(); // conta:tipo:id -> quando tentou (espera 10 min antes de tentar de novo)
+const ultimaCompra = new Map(); // conta -> { texto, at } (painel do celular)
+let compraBusy = false;
+
+function autoCompraCfg() {
+  const c = config.autoCompra && typeof config.autoCompra === 'object' ? config.autoCompra : {};
+  if (c.on === undefined) c.on = true;
+  if (!(c.limite > 0)) c.limite = 1000;
+  if (!(c.pocoes > 0)) c.pocoes = 2500;
+  if (!c.pocao || typeof c.pocao !== 'object') c.pocao = {};
+  config.autoCompra = c;
+  return c;
+}
+function compraLog(msg) {
+  try { fs.appendFileSync(path.join(app.getPath('userData'), 'compras.log'), `${new Date().toLocaleString('pt-BR')} ${msg}\n`); } catch {}
+}
+
+// Compra na página da conta: a quantidade sai do ouro de agora (o "Máx" da loja), até `max`.
+const compraScript = (kind, id, max, preco) => `(async () => {
+  const kind = ${JSON.stringify(kind === 'ball' ? 'ball' : 'item')}, id = ${Number(id)}, max = ${Number(max)}, preco = ${Number(preco)};
+  if (!window.__tkWsHook) {
+    const orig = WebSocket.prototype.send;
+    WebSocket.prototype.send = function () {
+      try { if (new URL(this.url, location.href).host === location.host) window.__tkGameWs = this; } catch {}
+      return orig.apply(this, arguments);
+    };
+    window.__tkWsHook = true;
+  }
+  const P = globalThis.__pokeidleHunt;
+  const eu = () => { let v = null; if (P && typeof P.on === 'function') { const off = P.on('estado', (d) => { v = d; }); if (typeof off === 'function') off(); } return v; };
+  const tem = () => { const v = eu(); return v ? Number(((kind === 'ball' ? v.balls : v.items) || {})[id]) || 0 : null; };
+  const antes = tem();
+  if (antes == null) return { ok: false, erro: 'o jogo ainda está carregando' };
+  const qty = Math.min(max, Math.floor((Number(eu().gold) || 0) / preco));
+  if (!(qty > 0)) return { ok: false, semOuro: true, antes, erro: 'sem ouro' };
+  const t0 = Date.now();
+  while (Date.now() - t0 < 35000) {
+    const ws = window.__tkGameWs;
+    if (ws && ws.readyState === 1) break;
+    if (ws && ws.readyState > 1) window.__tkGameWs = null;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  const ws = window.__tkGameWs;
+  if (!ws || ws.readyState !== 1) return { ok: false, antes, erro: 'sem conexão com o jogo' };
+  ws.send(JSON.stringify({ t: 'shop.buy', kind, id, qty }));
+  for (let i = 0; i < 20; i++) { await new Promise((r) => setTimeout(r, 500)); const d = tem(); if (d != null && d > antes) return { ok: true, antes, depois: d, qty }; }
+  return { ok: false, antes, qty, erro: 'o jogo não confirmou a compra' };
+})()`;
+
+async function comprarNaConta(id, kind, itemId, nome, max, preco) {
+  const key = `${id}:${kind}:${itemId}`;
+  const now = Date.now();
+  if (now - (compraTentou.get(key) || 0) < 10 * 60 * 1000) return;
+  compraTentou.set(key, now);
+  if (!pokeIsOpen(id)) return;
+  const wc = pokeViews.get(id).webContents;
+  if (wc.isLoading()) return;
+  const label = pokeLabel(id);
+  const r = await withTimeout(wc.executeJavaScript(compraScript(kind, itemId, max, preco)), 50 * 1000).catch((e) => ({ ok: false, erro: String(e && e.message || e) }));
+  if (r && r.ok) {
+    const texto = `comprou ${(r.depois - r.antes).toLocaleString('pt-BR')} ${nome} (tinha ${r.antes.toLocaleString('pt-BR')}, agora ${r.depois.toLocaleString('pt-BR')})`;
+    ultimaCompra.set(id, { texto, at: Date.now() });
+    compraLog(`${label}: ${texto}`);
+  } else {
+    compraLog(`${label}: não comprou ${nome} (${r && r.erro || 'sem resposta'})`);
+  }
+}
+
+async function autoCompraTick() {
+  if (ACCOUNT || compraBusy) return;
+  const c = autoCompraCfg();
+  if (!c.on) return;
+  compraBusy = true;
+  try {
+    // Compra de teste (diagnóstico): { conta, kind, id, nome, preco, qtd } posto à mão na config; roda uma vez, até 10 unidades.
+    if (c.teste && c.teste.conta && (pokeInfo.get(String(c.teste.conta)) || {}).inv) {
+      const tt = c.teste; delete c.teste; saveConfig();
+      compraTentou.delete(`${tt.conta}:${tt.kind === 'item' ? 'item' : 'ball'}:${Number(tt.id)}`);
+      await comprarNaConta(String(tt.conta), tt.kind === 'item' ? 'item' : 'ball', Number(tt.id), String(tt.nome || 'item') + ' (teste)', Math.max(1, Math.min(10, Number(tt.qtd) || 1)), Number(tt.preco) || 1);
+    }
+    for (const id of pokeAccountIds()) {
+      const i = pokeInfo.get(id);
+      const inv = i && i.logged && Date.now() - (i.at || 0) < 3 * 60 * 1000 ? i.inv : null;
+      if (!inv) continue;
+      // Primeiro a poção (sem ela o pokémon cai): a de maior estoque, a que a conta usa; zerada, a última lembrada.
+      const est = Object.entries(inv.pocoes || {}).map(([k, v]) => [Number(k), Number(v) || 0]).filter(([k]) => POCOES_LOJA[k]).sort((a, b) => b[1] - a[1]);
+      let pid = est.length && est[0][1] > 0 ? est[0][0] : Number(c.pocao[id]) || 0;
+      if (est.length && est[0][1] > 0 && c.pocao[id] !== pid) { c.pocao[id] = pid; saveConfig(); }
+      if (pid && POCOES_LOJA[pid] && (Number(inv.pocoes[pid]) || 0) < c.limite) await comprarNaConta(id, 'item', pid, POCOES_LOJA[pid][0], c.pocoes, POCOES_LOJA[pid][1]);
+      // Depois a bola (o Máx gasta o ouro que sobrar): a mais cara que a automação usa e a loja vende com ouro.
+      const bola = (inv.bolas || []).filter((b) => b.compravel && b.preco > 0 && (inv.ballIds || []).includes(b.id)).sort((a, b) => b.preco - a.preco)[0];
+      if (bola && (Number(inv.balls[bola.id]) || 0) < c.limite) await comprarNaConta(id, 'ball', bola.id, bola.nome, 9999, bola.preco);
+    }
+  } finally { compraBusy = false; }
 }
 
 ipcMain.handle('poke:setMode', async (_e, id, mode) => {
@@ -2987,7 +3297,7 @@ function extrasData(kind, conta) {
     const id = contas.some((x) => x.id === conta) ? conta : (activeAlt || POKE_MAIN);
     return contas.find((x) => x.id === id) || {};
   }
-  return { farming: !!config.farming, assistindo: watchers.size, contas };
+  return { farming: !!config.farming, assistindo: watchers.size, contas, ultimoShiny: shinyFollowCfg().ultimo || null };
 }
 // Pasta de dados de cada conta (para o backup).
 const extrasDataDirs = () => [[POKE_MAIN, app.getPath('userData')], ...pokeAccountIds().filter((id) => id !== POKE_MAIN).map((id) => [id, `${MAIN_DATA}-${id}`])];
@@ -3373,7 +3683,7 @@ app.whenReady().then(() => {
   scheduleTwitchSweep(90 * 1000); // primeira passada pelos saldos da Twitch logo depois de abrir
   setInterval(poll, POLL_MS);
   setInterval(() => send('status', snapshot()), 15 * 1000);
-  setInterval(() => { checkBonusEnding(); checkAutoBonus().catch((e) => autoLog('erro: ' + (e && e.stack || e))); updateTray(); }, 30 * 1000);
+  setInterval(() => { checkBonusEnding(); checkAutoBonus().catch((e) => autoLog('erro: ' + (e && e.stack || e))); shinyFollowTick().catch((e) => shinyLog('erro: ' + (e && e.stack || e))); autoCompraTick().catch((e) => compraLog('erro: ' + (e && e.stack || e))); updateTray(); }, 30 * 1000);
   setTimeout(syncPartners, 30 * 1000);
   setInterval(syncPartners, 6 * 60 * 60 * 1000);
 });
