@@ -290,6 +290,13 @@ function renderPokeBox() {
     if (c.open) {
       const linha = [c.nick, c.level ? `Nv ${c.level}` : null, c.xpH != null ? `${fmtK(c.xpH)} XP/h` : null, c.gold ? `💰 ${c.gold}` : null].filter(Boolean).join(' · ');
       card.append(el('div', 'pk-info', linha || 'Lendo o jogo…'));
+      // Previsão de shiny da sessão da conta; as dicas aparecem ao passar o mouse.
+      const sp = c.shinyPrev;
+      if (sp) {
+        const partes = [sp.ver ? `ver ~1 a cada ${sp.ver}` : null, sp.capturar ? `capturar ~1 a cada ${sp.capturar}` : null].filter(Boolean);
+        const txt = sp.outland ? 'Na Outland não existe shiny' : sp.medindo ? 'Previsão de shiny: medindo a sessão…' : partes.length ? 'Shiny: ' + partes.join(' · ') : '';
+        if (txt) { const n = el('div', 'pk-note', `✨ ${txt}${sp.mult > 1 ? ` (Lure ×${String(sp.mult).replace('.', ',')})` : ''}`); n.title = sp.dicas.join('\n'); card.append(n); }
+      }
       if (c.modeNow && c.modeNow !== c.mode) card.append(el('div', 'pk-note', `Agora em ${POKE_MODE_LABELS.find((m) => m[0] === c.modeNow)?.[1] || c.modeNow} (fora da tela)`));
     } else {
       const open = el('button', 'pk-open', 'Abrir');

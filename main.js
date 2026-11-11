@@ -1673,7 +1673,7 @@ const POKE_READ_SCRIPT = `(() => {
   const app = q('#app');
   const nick = txt('#tr-nick');
   let sess = null;
-  try { const o = nick && JSON.parse(localStorage.getItem('sessao-hunt:' + nick.toLowerCase()) || 'null'); if (o && o.ms > 0) sess = { ms: o.ms, xp: +o.xpTreinador || 0, gold: +o.gold || 0, abates: +o.abates || 0, capturas: +o.capturas || 0, shinies: +o.shinies || 0, shiniesVistos: +o.shiniesVistos || 0, bossTokens: +o.bossTokens || 0, itens: Object.fromEntries(['fragChave', 'fragShiny', 'fragBicicleta', 'fragMega', 'fragMegaShiny', 'fragOvoShiny', 'tmPeca', 'tmPecaAoe', 'ticketMistico', 'ticketSafari'].map((k) => [k, +o[k] || 0]).filter((e) => e[1] > 0)) }; } catch {}
+  try { const o = nick && JSON.parse(localStorage.getItem('sessao-hunt:' + nick.toLowerCase()) || 'null'); if (o && o.ms > 0) sess = { ms: o.ms, xp: +o.xpTreinador || 0, gold: +o.gold || 0, abates: +o.abates || 0, capturas: +o.capturas || 0, shinies: +o.shinies || 0, shiniesVistos: +o.shiniesVistos || 0, bossTokens: +o.bossTokens || 0, arremessos: Object.values(o.bolas || {}).reduce((a, b) => a + (+b || 0), 0), itens: Object.fromEntries(['fragChave', 'fragShiny', 'fragBicicleta', 'fragMega', 'fragMegaShiny', 'fragOvoShiny', 'tmPeca', 'tmPecaAoe', 'ticketMistico', 'ticketSafari'].map((k) => [k, +o[k] || 0]).filter((e) => e[1] > 0)) }; } catch {}
   // Pokémon em campo: o card "#ativo-card" do jogo (nome, "Nv N" em .pl-lv, barra de XP, brilho se for shiny).
   let ativo = null;
   const ac = q('#ativo-card');
@@ -1690,13 +1690,22 @@ const POKE_READ_SCRIPT = `(() => {
     };
   }
   // Onde a conta está caçando: o estado do jogo que a extensão /hunt guarda (o nome vem das hunts do welcome).
-  let hunt = null, inv = null;
+  let hunt = null, inv = null, outland = false, lure = null;
   try {
     const P = globalThis.__pokeidleHunt;
     if (P && typeof P.on === 'function') {
       const ult = (tipo) => { let v = null; const off = P.on(tipo, (d) => { v = d; }); if (typeof off === 'function') off(); return v; };
       const e = ult('estado'), w = ult('welcome');
       const h = e && e.huntSlug && w && Array.isArray(w.hunts) ? w.hunts.find((x) => x.slug === e.huntSlug) : null;
+      // Outland: as espécies da hunt são as variantes #2001 a #2058 (ou a faixa antiga 10501+). Lá não existe shiny.
+      if (h && Array.isArray(h.especies) && h.especies.length) outland = h.especies.every((x) => { const p = Number(x.pokeId); return (p >= 2001 && p < 2059) || (p >= 10501 && p < 10548); });
+      // Lure ativo: o da Loja (dobra a chance de shiny) e o resgatado na Kick/Twitch (+pct).
+      if (e) {
+        const ate = (v) => Number(v) || 0;
+        const bs = (pl) => (pl && pl.bonus ? ate(pl.bonus.shiny) : 0);
+        lure = { loja: ate(e.loja && e.loja.boosts && e.loja.boosts.shiny), kick: bs(e.kick), kickPct: e.kick ? ate(e.kick.pct) : 0,
+          twitch: bs(e.twitch), twitchPct: e.twitch ? ate(e.twitch.pct) : 0, temDados: !!(e.loja || e.kick || e.twitch) };
+      }
       if (e) hunt = e.safari && e.safari.dentro ? 'Safari' : e.casa && e.casa.dentro ? 'casa' : e.boss && e.boss.arena ? 'arena de boss' : e.mistico ? 'área mística' : e.noCentro ? 'Centro Pokémon' : h ? (h.nome || h.slug) : e.huntSlug || null;
       if (e) {
         const num = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k, Number(v) || 0]));
@@ -1710,7 +1719,7 @@ const POKE_READ_SCRIPT = `(() => {
   return {
     logged: (!!app && !app.classList.contains('hidden')) || token,
     loginScreen: !token && !!q('input[type="password"]'),
-    nick, level: txt('#tr-level'), gold: txt('#tr-gold'), xp: txt('#tr-xp-txt'), sess, ativo, hunt, inv,
+    nick, level: txt('#tr-level'), gold: txt('#tr-gold'), xp: txt('#tr-xp-txt'), sess, ativo, hunt, inv, outland, lure,
     mode: document.documentElement.classList.contains('modo-ultra') ? 'ultra'
       : localStorage.getItem('cfg-economia') === '1' ? 'economia' : localStorage.getItem('cfg-otimizado') === '1' ? 'otimizado' : 'cena',
   };
@@ -1766,7 +1775,8 @@ async function watchPokeAccount(id) {
     mode: r.mode, xpH: r.sess && r.sess.ms > 60000 ? Math.round(r.sess.xp / r.sess.ms * 3600e3) : null, sessXp: r.sess ? r.sess.xp : null,
     abates: r.sess ? r.sess.abates : null, capturas: r.sess ? r.sess.capturas : null, shinies: r.sess ? r.sess.shinies : null,
     shiniesVistos: r.sess ? r.sess.shiniesVistos : null, bossTokens: r.sess ? r.sess.bossTokens : null, itens: r.sess ? r.sess.itens : null,
-    sessMs: r.sess ? r.sess.ms : null, ativo: r.logged ? (r.ativo || prev.ativo || null) : null, hunt: r.logged ? (r.hunt || null) : null, inv: r.logged ? (r.inv || null) : null, problem: null };
+    sessMs: r.sess ? r.sess.ms : null, ativo: r.logged ? (r.ativo || prev.ativo || null) : null, hunt: r.logged ? (r.hunt || null) : null, inv: r.logged ? (r.inv || null) : null,
+    arremessos: r.sess ? r.sess.arremessos : null, outland: r.logged ? !!r.outland : false, lure: r.logged ? (r.lure || null) : null, problem: null };
   // Shiny na mesma sessão de caça (o placar só sobe; se ele voltou a zero, é uma sessão nova): avisa.
   if (prev.shinies != null && info.shinies != null && (info.sessMs || 0) >= (prev.sessMs || 0)) {
     if (info.shinies > prev.shinies) pokeShout(id, `✨ Pegou um SHINY! Já são ${info.shinies} nesta sessão.`);
@@ -1815,12 +1825,76 @@ async function watchPokeAccounts() {
   send('status', snapshot());
 }
 
+// ---------- Previsão de shiny ----------
+// Regra do jogo (Termos, "Shiny"): 1 em 24.000, sorteado a cada ARREMESSO de bola, antes de saber se a
+// bola fecha; se a captura falha, o shiny vai embora com o Pokémon. Então "ver" um shiny depende dos
+// arremessos por hora e "capturar" das capturas por hora (cada capturado tem a mesma chance), as duas da
+// sessão de caça da própria conta. O Shiny Secret Lure da Loja dobra a chance; o bônus da Kick/Twitch soma
+// +15% (os dois juntos: 2,3×). Na Outland não existe shiny. Captura (shared/captura-degrau.mjs do jogo): o
+// fator do estágio é 2,8669 (básica), 3,5745 (meio) e 4,4681 (final), então a forma básica captura ~56%
+// mais fácil que a final; a força da bola é Poke 1, Great 2, Super 3, Ultra 4, Beast 8, e a chance cresce
+// na mesma proporção, com teto de 10% por arremesso.
+const SHINY_CHANCE = 1 / 24000;
+const FORCA_BOLA = [[/beast/i, 8], [/ultra/i, 4], [/super/i, 3], [/great/i, 2], [/pok[eé]/i, 1]];
+const forcaBola = (nome) => (FORCA_BOLA.find(([re]) => re.test(nome || '')) || [null, 0])[1];
+function fmtEspera(h) {
+  if (!(h > 0) || !Number.isFinite(h)) return null;
+  if (h < 1) return `${Math.max(1, Math.round(h * 60))} min`;
+  if (h < 48) return `${Math.round(h)} h`;
+  const d = h / 24;
+  if (d < 365) return `${Math.round(d)} dias`;
+  return `${(d / 365).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} anos`;
+}
+// O Lure da Kick/Twitch pelo que o próprio TK sabe dos resgates (quando o jogo não mandou os bônus).
+function tkLureAte(id) {
+  const now = Date.now();
+  const fim = (list) => { const b = (list || [])[2]; return b && b.endsAt > now ? b.endsAt : 0; };
+  if (id === POKE_MAIN) return Math.max(fim(activeBonuses(now, 'kick')), fim(activeBonuses(now, 'twitch')));
+  const last = altLast.get(id);
+  return last ? Math.max(fim(last.bonuses), fim(last.twitchBonuses)) : 0;
+}
+function shinyPrevisao(id, i) {
+  if (!i || !i.logged || !(i.sessMs > 0)) return null;
+  const now = Date.now();
+  const L = i.lure || {};
+  const lojaOn = (L.loja || 0) > now;
+  const kickOn = (L.kick || 0) > now, twitchOn = (L.twitch || 0) > now;
+  const plataformaOn = kickOn || twitchOn || (!L.temDados && tkLureAte(id) > now);
+  const pct = plataformaOn ? Math.max(kickOn ? L.kickPct || 0 : 0, twitchOn ? L.twitchPct || 0 : 0) || 15 : 0;
+  const mult = (lojaOn ? 2 : 1) * (1 + pct / 100);
+  const p = SHINY_CHANCE * mult;
+  const horas = i.sessMs / 3600e3;
+  const medindo = horas < 0.25 || (i.capturas || 0) < 3;
+  const arrH = i.arremessos > 0 ? i.arremessos / horas : 0;
+  const capH = i.capturas > 0 ? i.capturas / horas : 0;
+  const dicas = ['O shiny é sorteado no arremesso da bola (1 em 24.000) e só fica com você se a bola fechar. Por isso aparece shiny "visto" sem nenhum capturado.'];
+  const inv = i.inv || {};
+  // A bola que a automação está jogando de fato: a melhor da lista que ainda tem na bolsa.
+  const comEstoque = (inv.ballIds || []).filter((b) => ((inv.balls || {})[b] || 0) > 0);
+  const nomes = (comEstoque.length ? comEstoque : inv.ballIds || []).map((b) => ((inv.bolas || []).find((x) => x.id === b) || {}).nome).filter(Boolean);
+  const melhor = nomes.reduce((a, b) => (forcaBola(b) > forcaBola(a) ? b : a), null);
+  const f = forcaBola(melhor);
+  if (f && f < 8) dicas.push(`Bola melhor: a Beast Ball (força 8, só por diamante) captura ${(8 / f).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}× mais que a ${melhor} (força ${f}), até o teto de 10% por arremesso.`);
+  else if (!f) dicas.push('Bola melhor: Poke Ball 1, Great 2, Super 3, Ultra 4, Beast 8. A captura cresce na mesma proporção, até 10% por arremesso.');
+  dicas.push('Hunt de forma básica: captura ~56% mais fácil que a forma final (a forma do meio, ~25%).');
+  dicas.push(lojaOn ? 'Shiny Secret Lure da Loja ativo: a chance já está dobrada nesta conta.' : 'Shiny Secret Lure da Loja (por diamante): dobra a chance, corta o tempo pela metade.');
+  dicas.push(plataformaOn ? `Secret Lure da Kick/Twitch ativo: +${pct}% já está na conta.` : 'Secret Lure da Kick/Twitch: +15% (o TK resgata com os pontos dos canais). Junto com o da Loja, a chance fica 2,3×.');
+  dicas.push('Capture Boost (Loja: dobra; Kick/Twitch: +15%) acelera o capturar, não o ver.');
+  dicas.push('Na Outland não existe shiny.');
+  return {
+    ver: !medindo && arrH > 0 ? fmtEspera(1 / (arrH * p)) : null,
+    capturar: !medindo && capH > 0 ? fmtEspera(1 / (capH * p)) : null,
+    medindo, outland: !!i.outland, mult: Math.round(mult * 100) / 100, dicas,
+  };
+}
+
 function pokeAccountsSummary() {
   return pokeAccountIds().map((id) => {
     const i = pokeInfo.get(id) || {};
     return { id, label: pokeLabel(id), open: pokeIsOpen(id), mode: pokeChosenMode(id), modeNow: i.mode || null,
       nick: i.nick || null, level: i.level || null, gold: i.gold || null, xpH: i.xpH, abates: i.abates, capturas: i.capturas,
       shinies: i.shinies, shiniesVistos: i.shiniesVistos, bossTokens: i.bossTokens, itens: i.itens || null, sessMs: i.sessMs, ativo: i.ativo || null, hunt: i.hunt || null, inv: i.inv || null, compra: ultimaCompra.get(id) || null,
+      shinyPrev: shinyPrevisao(id, i),
       seguir: { on: !!shinyFollowCfg().contas[id], st: (({ nome, nick, huntNome, ate } = {}) => (ate ? { nome, nick, huntNome, ate } : null))(shinyFollowCfg().estado[id]) },
       logged: i.logged ?? null, problem: i.problem || null, readAt: i.at || null };
   });
