@@ -292,6 +292,8 @@ function renderPokeBox() {
       const linha = [c.nick, c.level ? `Nv ${c.level}` : null, c.xpH != null ? `${fmtK(c.xpH)} XP/h` : null, c.gold ? `💰 ${c.gold}` : null].filter(Boolean).join(' · ');
       card.append(el('div', 'pk-info', linha || 'Lendo o jogo…'));
       // Previsão de shiny da sessão da conta; as dicas aparecem ao passar o mouse.
+      const mh = c.melhorHunt;
+      if (mh) { const n = el('div', 'pk-note', `🗺️ ${mh.resumo}`); n.title = mh.detalhes.join('\n'); card.append(n); }
       const sp = c.shinyPrev;
       if (sp) {
         const partes = [sp.ver ? `ver ~1 a cada ${sp.ver}` : null, sp.capturar ? `capturar ~1 a cada ${sp.capturar}` : null].filter(Boolean);

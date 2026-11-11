@@ -218,7 +218,7 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
   .bn { font: inherit; font-size: 12.5px; color: inherit; background: none; border: 1px solid var(--line); border-radius: 8px; padding: 5px 4px; width: 100%; text-align: inherit; }
   .bn:disabled { opacity: .5; } .hint { color: var(--muted); font-size: 12px; font-weight: 500; margin: -6px 0 12px; }
   .acts button.on { border-color: #ffd34d; color: #ffd34d; }
-  .prev { color: var(--txt); cursor: pointer; margin-bottom: 12px; } .dicas { margin: -2px 0 8px; padding-left: 18px; font-size: 12px; color: var(--muted); } .dicas li { margin: 3px 0; }
+  .prev { color: var(--txt); cursor: pointer; margin-bottom: 12px; } .toque { color: var(--txt); cursor: pointer; } .dicas { margin: -2px 0 8px; padding-left: 18px; font-size: 12px; color: var(--muted); } .dicas li { margin: 3px 0; }
   .acts button:disabled { opacity: .5; } .msg { font-size: 12px; margin-top: 6px; color: var(--accent); font-weight: 500; } .msg.err { color: #ff8f93; }
 </style></head><body><h1>🎮 TK MultiStream</h1><div class="sub" id="sub">Carregando…</div><div class="hint">Toque num bônus para comprar 1 h dele agora.</div><div class="hint shiny" id="shiny"></div><div id="list"></div>
 <script>
@@ -287,6 +287,15 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
         const it = Object.entries(a.itens || {}).map(([k, v]) => n(v) + ' ' + (ITENS[k] || k));
         if (a.bossTokens) it.unshift(n(a.bossTokens) + ' boss token' + (a.bossTokens === 1 ? '' : 's'));
         if (it.length) box.append(el('div', 'line', '🎁 ' + it.join(' · ')));
+      }
+      // Melhor hunt (conta da extensão /hunt). Tocar mostra as melhores para XP e para ouro.
+      const mh = a.melhorHunt;
+      if (mh) {
+        const kh = 'h:' + a.id;
+        const lh = el('div', 'line toque', '🗺️ ' + mh.resumo + (dicas[kh] ? ' ▴' : ' ⓘ'));
+        lh.onclick = () => { dicas[kh] = !dicas[kh]; render(); };
+        box.append(lh);
+        if (dicas[kh]) { const ul = el('ul', 'dicas'); for (const dc of mh.detalhes) ul.append(el('li', null, dc)); box.append(ul); }
       }
       // Previsão de shiny da sessão desta conta. Tocar mostra as dicas.
       const sp = a.shinyPrev;

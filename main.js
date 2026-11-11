@@ -1730,6 +1730,42 @@ const POKE_READ_SCRIPT = `(() => {
   };
 })()`;
 
+// Melhor hunt: a conta da extensão /hunt (a mesma da tabela "Onde caçar?" dela) com o Pokémon em campo,
+// os bônus de XP e o tipo do dia. A pé, como a /hunt. Devolve só o que o TK mostra: as melhores para XP
+// e para ouro e a hunt atual (mesmo onde o Pokémon não derrota ninguém).
+const POKE_HUNT_SCRIPT = `(async () => {
+  const P = globalThis.__pokeidleHunt;
+  if (!P || typeof P.on !== 'function' || !P.engine || typeof P.engine.analisar !== 'function' || typeof P.carregarJogo !== 'function') return { ok: false, motivo: 'a extensão /hunt não está carregada (ou é antiga)' };
+  const ult = (tipo) => { let v = null; const off = P.on(tipo, (d) => { v = d; }); if (typeof off === 'function') off(); return v; };
+  const w = ult('welcome'), eu = ult('estado');
+  if (!w || !eu) return { ok: false, motivo: 'o jogo ainda está carregando' };
+  const pk = (eu.pokemons || []).find((x) => x.id === eu.activeId);
+  if (!pk) return { ok: false, motivo: 'sem Pokémon em campo' };
+  const J = await P.carregarJogo();
+  const G = P.geo || {};
+  const chave = typeof G.chaveDoPokemon === 'function' ? G.chaveDoPokemon(pk) : null;
+  const ctx = { mod: J.mod, especies: J.especies, hunts: w.hunts || [],
+    consts: { tabelaTipos: w.tabelaTipos, ampliacaoHunt: w.ampliacaoHunt, multHpSelvagem: w.multHpSelvagem, multDanoSelvagem: w.multDanoSelvagem,
+      tiposBoost: w.tiposBoost, catalogoBolas: w.catalogoBolas, captura: w.captura, chanceShiny: w.chanceShiny, shinyLooks: w.shinyLooks },
+    eu, ritmo: P.ritmo || null,
+    mapaVisto: (slug) => (typeof G.mapaDa === 'function' ? G.mapaDa(slug) : null),
+    ritmoMedido: (slug) => (chave && typeof G.ritmoMedido === 'function' ? G.ritmoMedido(slug, chave) : null) };
+  const tipoDoDia = eu.diaSazonal && typeof eu.diaSazonal.tipo === 'string' ? eu.diaSazonal.tipo : null;
+  const r = P.engine.analisar(pk, ctx, { ordem: 'xp', soLiberadas: true, tipoDoDia });
+  const REG = {};
+  for (const x of P.engine.REGIOES_DO_MAPA || []) REG[x.id] = x.rotulo;
+  const lin = (l) => ({ slug: l.slug || null, nome: String(l.nome || l.slug || '?'), nivel: Number(l.nivel) || 0, regiao: REG[l.regiao] || l.regiao || null,
+    inviavel: !!l.inviavel || !(Number(l.kph) > 0), kph: Math.round(Number(l.kph) || 0), kphMedido: l.kphMedido ? Math.round(l.kphMedido) : null,
+    seg: Math.round((Number(l.ttk) || 0) * 10) / 10, xpH: Math.round(Number(l.xpTreinadorH) || 0), ouroH: Math.round(Number(l.ouroH) || 0),
+    dano: Math.round((Number(l.hitPct) || 0) * 100), golpe: l.melhorGolpe ? l.melhorGolpe.nome : null });
+  const todas = (r.linhas || []).map(lin);
+  const boas = todas.filter((l) => !l.inviavel);
+  return { ok: true, pokemon: (r.especie && r.especie.name) || pk.nome || null, level: Number(pk.level) || null, aoe: !!r.aoe, ms: r.ms,
+    atual: (eu.huntSlug && todas.find((l) => l.slug === eu.huntSlug)) || null,
+    porXp: boas.slice().sort((a, b) => b.xpH - a.xpH).slice(0, 8),
+    porOuro: boas.slice().sort((a, b) => b.ouroH - a.ouroH).slice(0, 5) };
+})()`;
+
 async function pokeAlert(id, problem, text) {
   if (pokeAlerted.get(id) === problem) return; // já avisado; volta a avisar quando resolver e acontecer de novo
   pokeAlerted.set(id, problem);
@@ -1815,6 +1851,7 @@ async function watchPokeAccount(id) {
   else if (info.problem === 'semAbate') pokeAlert(id, 'semAbate', `Está caçando (lutando), mas há ${paradaMin} min sem derrotar nenhum Pokémon, então sem XP.${emCampo}`);
   else if (info.problem === 'parada') pokeAlert(id, 'parada', `Logada, mas sem ganhar XP há ${paradaMin} min e o jogo não mostra luta. Confira se está numa hunt.`);
   else pokeResolved(id);
+  await atualizarMelhorHunt(id, wc, info).catch(() => {});
   await applyPokeMode(id);
   // Otimizar: recarrega a conta de tempos em tempos (só fora da tela), para liberar memória.
   const every = (config.pokeOptimizeMin ?? 240) * 60 * 1000;
@@ -1904,13 +1941,66 @@ function shinyPrevisao(id, i) {
   };
 }
 
+// ---------- Melhor hunt ----------
+// A conta roda na página de cada conta (POKE_HUNT_SCRIPT): de 10 em 10 min, ou logo que troca o Pokémon
+// em campo ou a hunt. Sem resposta, tenta de novo em 1 min (guardando a última que deu certo).
+const MELHOR_HUNT_MS = 10 * 60 * 1000;
+const pokeHuntRank = new Map(); // conta -> { at, chave, r }
+async function atualizarMelhorHunt(id, wc, info) {
+  if (!info.logged || !info.ativo) return;
+  const chave = `${info.ativo.nome || ''}|${info.hunt || ''}`;
+  const old = pokeHuntRank.get(id);
+  const now = Date.now();
+  if (old && old.chave === chave && now - old.at < (old.r && old.r.ok ? MELHOR_HUNT_MS : 60 * 1000)) return;
+  const r = await withTimeout(wc.executeJavaScript(POKE_HUNT_SCRIPT), 30 * 1000).catch(() => null);
+  if (!(r && r.ok) && old && old.r && old.r.ok && old.chave === chave) { old.at = now - MELHOR_HUNT_MS + 60 * 1000; return; }
+  pokeHuntRank.set(id, { at: now, chave, r: r || { ok: false, motivo: 'não respondeu' } });
+}
+
+// O texto do Melhor hunt: uma linha (a melhor para XP e o ganho sobre a atual) e os detalhes ao tocar.
+function melhorHuntTexto(r, nomeEmCampo) {
+  if (!r || !r.ok) return null;
+  const n = (v) => Math.round(v).toLocaleString('pt-BR');
+  const mi = (v) => (v >= 1e6 ? `${(v / 1e6).toFixed(1).replace('.', ',')} mi` : v >= 1e3 ? `${Math.round(v / 1e3)} mil` : String(Math.round(v)));
+  const sinal = (g) => `${g >= 0 ? '+' : ''}${g}%`;
+  const pk = nomeEmCampo || r.pokemon || 'Pokémon';
+  const a = r.atual;
+  const atual = a && !a.inviavel ? a : null;
+  const ganho = (v, base) => (base > 0 ? Math.round((v / base - 1) * 100) : null);
+  const best = r.porXp[0];
+  let resumo;
+  if (!best) resumo = `Melhor hunt: nenhuma hunt liberada em que o ${pk} derrote os selvagens`;
+  else if (a && a.slug === best.slug) resumo = `Melhor hunt: já está na melhor para XP (${best.nome})`;
+  else if (a && a.inviavel) resumo = `Melhor hunt: ${best.nome} (Nv ${n(best.nivel)}) · aqui o ${pk} não derrota os selvagens`;
+  else if (atual) { const g = ganho(best.xpH, atual.xpH); resumo = `Melhor hunt: ${best.nome} (Nv ${n(best.nivel)})${g != null ? ` · ${sinal(g)} de XP` : ''}`; }
+  else resumo = `Melhor hunt: ${best.nome} (Nv ${n(best.nivel)})`;
+  const linha = (h, i, campo, rotulo) => {
+    const g = atual && h.slug !== atual.slug ? ganho(h[campo], atual[campo]) : null;
+    return `${i + 1}. ${h.nome} · Nv ${n(h.nivel)}${h.regiao ? ` · ${h.regiao}` : ''} · ~${n(h.kph)} abates/h · ${mi(h[campo])} ${rotulo}${g != null ? ` (${sinal(g)})` : ''}${a && h.slug === a.slug ? ' · você está aqui' : ''}`;
+  };
+  const agora = !a ? 'fora de uma hunt'
+    : a.inviavel ? `${a.nome} · o ${pk} não derrota os selvagens daqui`
+    : `${a.nome} · ~${n(a.kph)} abates/h · ${mi(a.xpH)} XP/h · mata em ${String(a.seg).replace('.', ',')} s${a.golpe ? ` com ${a.golpe}` : ''}${a.dano ? ` · leva até ${a.dano}% da vida num golpe` : ''}${a.kphMedido ? ` · você fez ${n(a.kphMedido)} abates/h aqui` : ''}`;
+  const detalhes = [
+    `Conta da extensão /hunt (a tabela "Onde caçar?" do jogo) com ${pk}${r.level ? ` Nv ${n(r.level)}` : ''} em campo${r.aoe ? ', com AoE' : ''}. A pé: não conta a bicicleta.`,
+    `Agora: ${agora}`,
+  ];
+  if (r.porXp.length) detalhes.push('⚡ Mais XP:', ...r.porXp.slice(0, 5).map((h, i) => linha(h, i, 'xpH', 'XP/h')));
+  if (r.porOuro.length) detalhes.push('💰 Mais ouro:', ...r.porOuro.slice(0, 3).map((h, i) => linha(h, i, 'ouroH', 'ouro/h')));
+  return { resumo, detalhes };
+}
+const melhorHuntDaConta = (id) => {
+  const e = pokeHuntRank.get(id), i = pokeInfo.get(id) || {};
+  return e && i.logged ? melhorHuntTexto(e.r, i.ativo && i.ativo.nome) : null;
+};
+
 function pokeAccountsSummary() {
   return pokeAccountIds().map((id) => {
     const i = pokeInfo.get(id) || {};
     return { id, label: pokeLabel(id), open: pokeIsOpen(id), mode: pokeChosenMode(id), modeNow: i.mode || null,
       nick: i.nick || null, level: i.level || null, gold: i.gold || null, xpH: i.xpH, abates: i.abates, capturas: i.capturas,
       shinies: i.shinies, shiniesVistos: i.shiniesVistos, bossTokens: i.bossTokens, itens: i.itens || null, sessMs: i.sessMs, ativo: i.ativo || null, hunt: i.hunt || null, inv: i.inv || null, compra: ultimaCompra.get(id) || null,
-      shinyPrev: shinyPrevisao(id, i),
+      shinyPrev: shinyPrevisao(id, i), melhorHunt: melhorHuntDaConta(id),
       seguir: { on: !!shinyFollowCfg().contas[id], st: (({ nome, nick, huntNome, ate } = {}) => (ate ? { nome, nick, huntNome, ate } : null))(shinyFollowCfg().estado[id]) },
       logged: i.logged ?? null, problem: i.problem || null, semXpMin: i.semXpMin || null, luz: i.luz || null, readAt: i.at || null };
   });
