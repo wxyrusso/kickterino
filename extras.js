@@ -207,9 +207,9 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
   body { background: var(--bg); padding: 14px; max-width: 640px; margin: 0 auto; }
   h1 { font-size: 18px; margin: 0 0 4px; } .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
   .acc { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
-  .acc.bad { border-color: #e5484d; } .acc h2 { font-size: 15px; margin: 0; display: flex; justify-content: space-between; gap: 8px; }
+  .acc.bad { border-color: #e5484d; } .acc.warn { border-color: #f5a524; } .acc h2 { font-size: 15px; margin: 0; display: flex; justify-content: space-between; gap: 8px; }
   .chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--line); color: var(--muted); }
-  .chip.ok { background: var(--accent); color: #0b1a1f; } .chip.bad { background: #e5484d; color: #fff; }
+  .chip.ok { background: var(--accent); color: #0b1a1f; } .chip.bad { background: #e5484d; color: #fff; } .chip.warn { background: #f5a524; color: #000; }
   .line { font-size: 13px; color: var(--muted); margin: 3px 0 6px; font-weight: 500; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; } td { padding: 3px 2px; } td:last-child, td:nth-child(3) { text-align: right; }
   .stats { color: var(--txt); } .shiny { color: #ffd34d; font-weight: 700; }
@@ -256,9 +256,9 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
     document.getElementById('shiny').textContent = u ? '✨ Último shiny do jogo: ' + u.nome + ' de ' + u.nick + ' · há ' + fmt(now - u.at) : '';
     const list = document.getElementById('list'); list.textContent = '';
     for (const a of d.contas) {
-      const box = el('div', 'acc' + (a.problem ? ' bad' : ''));
+      const box = el('div', 'acc' + (a.problem === 'semAbate' ? ' warn' : a.problem ? ' bad' : ''));
       const h = el('h2'); h.append(el('span', null, a.label + (a.nick ? ' · ' + a.nick : '')));
-      const st = !a.open ? ['fechada', ''] : a.problem === 'deslogou' ? ['deslogou', 'bad'] : a.problem === 'parada' ? ['sem XP', 'bad'] : a.logged ? ['caçando', 'ok'] : ['sem login', ''];
+      const st = !a.open ? ['fechada', ''] : a.problem === 'deslogou' ? ['deslogou', 'bad'] : a.problem === 'parada' ? ['sem XP', 'bad'] : a.problem === 'semAbate' ? ['caçando · ' + (a.semXpMin || 10) + ' min sem abate', 'warn'] : a.logged ? ['caçando', 'ok'] : ['sem login', ''];
       h.append(el('span', 'chip ' + st[1], st[0])); box.append(h);
       box.append(el('div', 'line', [a.level ? 'Nv ' + a.level : '', a.xpH ? Math.round(a.xpH / 1000) + ' mil XP/h' : '', a.gold ? '💰 ' + a.gold : ''].filter(Boolean).join(' · ') || ' '));
       if (a.hunt) box.append(el('div', 'line', '📍 ' + a.hunt));

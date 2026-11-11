@@ -1716,10 +1716,15 @@ const POKE_READ_SCRIPT = `(() => {
       }
     }
   } catch {}
+  // A luz do placar do próprio jogo (Modo Economia ou Ultra): "cacando" = houve luta nos últimos 30 s,
+  // "parado", "fora" (fora da caça) ou "caindo" (reconectando). No modo cena não há placar andando.
+  const ultra = document.documentElement.classList.contains('modo-ultra');
+  const lz = ultra ? q('.ultra-luz') : localStorage.getItem('cfg-economia') === '1' ? q('.eco-luz') : null;
+  const luz = lz ? lz.getAttribute('data-estado') || null : null;
   return {
     logged: (!!app && !app.classList.contains('hidden')) || token,
     loginScreen: !token && !!q('input[type="password"]'),
-    nick, level: txt('#tr-level'), gold: txt('#tr-gold'), xp: txt('#tr-xp-txt'), sess, ativo, hunt, inv, outland, lure,
+    nick, level: txt('#tr-level'), gold: txt('#tr-gold'), xp: txt('#tr-xp-txt'), sess, ativo, hunt, inv, outland, lure, luz,
     mode: document.documentElement.classList.contains('modo-ultra') ? 'ultra'
       : localStorage.getItem('cfg-economia') === '1' ? 'economia' : localStorage.getItem('cfg-otimizado') === '1' ? 'otimizado' : 'cena',
   };
@@ -1776,7 +1781,7 @@ async function watchPokeAccount(id) {
     abates: r.sess ? r.sess.abates : null, capturas: r.sess ? r.sess.capturas : null, shinies: r.sess ? r.sess.shinies : null,
     shiniesVistos: r.sess ? r.sess.shiniesVistos : null, bossTokens: r.sess ? r.sess.bossTokens : null, itens: r.sess ? r.sess.itens : null,
     sessMs: r.sess ? r.sess.ms : null, ativo: r.logged ? (r.ativo || prev.ativo || null) : null, hunt: r.logged ? (r.hunt || null) : null, inv: r.logged ? (r.inv || null) : null,
-    arremessos: r.sess ? r.sess.arremessos : null, outland: r.logged ? !!r.outland : false, lure: r.logged ? (r.lure || null) : null, problem: null };
+    arremessos: r.sess ? r.sess.arremessos : null, outland: r.logged ? !!r.outland : false, lure: r.logged ? (r.lure || null) : null, luz: r.logged ? (r.luz || null) : null, problem: null };
   // Shiny na mesma sessão de caça (o placar só sobe; se ele voltou a zero, é uma sessão nova): avisa.
   if (prev.shinies != null && info.shinies != null && (info.sessMs || 0) >= (prev.sessMs || 0)) {
     if (info.shinies > prev.shinies) pokeShout(id, `✨ Pegou um SHINY! Já são ${info.shinies} nesta sessão.`);
@@ -1802,11 +1807,13 @@ async function watchPokeAccount(id) {
   }
   const parada = pokeXpSince.get(id);
   const paradaMin = pokeSettings().vigia.paradaMin;
-  if (prev.logged && !info.logged) info.problem = 'deslogou';
-  else if (info.logged && parada && now - parada.at >= paradaMin * 60 * 1000) info.problem = 'parada';
+  info.problem = pokeProblema(prev, info, parada, now, paradaMin);
+  if (info.problem === 'semAbate' || info.problem === 'parada') info.semXpMin = Math.floor((now - parada.at) / 60000);
   pokeInfo.set(id, info);
+  const emCampo = info.ativo && info.ativo.nome ? ` Em campo: ${info.ativo.nome}${info.ativo.level ? ' Nv ' + info.ativo.level : ''}, que pode estar fraco para esta hunt.` : '';
   if (info.problem === 'deslogou') pokeAlert(id, 'deslogou', 'A conta saiu do jogo (deslogou ou caiu). Abra o PokeIdle dela e entre de novo.');
-  else if (info.problem === 'parada') pokeAlert(id, 'parada', `Logada, mas sem ganhar XP há ${paradaMin} min. Confira se está numa hunt.`);
+  else if (info.problem === 'semAbate') pokeAlert(id, 'semAbate', `Está caçando (lutando), mas há ${paradaMin} min sem derrotar nenhum Pokémon, então sem XP.${emCampo}`);
+  else if (info.problem === 'parada') pokeAlert(id, 'parada', `Logada, mas sem ganhar XP há ${paradaMin} min e o jogo não mostra luta. Confira se está numa hunt.`);
   else pokeResolved(id);
   await applyPokeMode(id);
   // Otimizar: recarrega a conta de tempos em tempos (só fora da tela), para liberar memória.
@@ -1815,6 +1822,15 @@ async function watchPokeAccount(id) {
     pokeLastReload.set(id, now);
     wc.reload();
   }
+}
+
+// O que há de errado com a conta. XP parado não quer dizer conta parada: o XP de treinador só sobe quando
+// um selvagem morre (sessao-hunt.mjs do jogo). Se a luz do jogo diz que está lutando, é "caçando, sem abate"
+// (um Pokémon fraco em campo, por exemplo); se não, a conta está parada de fato.
+function pokeProblema(prev, info, parada, now, paradaMin) {
+  if (prev.logged && !info.logged) return 'deslogou';
+  if (info.logged && parada && now - parada.at >= paradaMin * 60 * 1000) return info.luz === 'cacando' ? 'semAbate' : 'parada';
+  return null;
 }
 
 let pokeWatching = false;
@@ -1896,7 +1912,7 @@ function pokeAccountsSummary() {
       shinies: i.shinies, shiniesVistos: i.shiniesVistos, bossTokens: i.bossTokens, itens: i.itens || null, sessMs: i.sessMs, ativo: i.ativo || null, hunt: i.hunt || null, inv: i.inv || null, compra: ultimaCompra.get(id) || null,
       shinyPrev: shinyPrevisao(id, i),
       seguir: { on: !!shinyFollowCfg().contas[id], st: (({ nome, nick, huntNome, ate } = {}) => (ate ? { nome, nick, huntNome, ate } : null))(shinyFollowCfg().estado[id]) },
-      logged: i.logged ?? null, problem: i.problem || null, readAt: i.at || null };
+      logged: i.logged ?? null, problem: i.problem || null, semXpMin: i.semXpMin || null, luz: i.luz || null, readAt: i.at || null };
   });
 }
 

@@ -160,6 +160,7 @@ body.poke-focus #accounts-bar { display: none !important; }
 .pk-card { padding: 7px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-3); cursor: pointer; }
 .pk-card.closed { opacity: .7; }
 .pk-card.bad { border-color: #ff6b6b; box-shadow: 0 0 10px rgba(255, 107, 107, .25); }
+.pk-card.warn { border-color: #f5a524; }
 .pk-top { display: flex; align-items: center; gap: 8px; }
 .pk-top b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pk-chip { font-size: 10px; font-weight: 800; padding: 1px 7px; border-radius: 999px; background: var(--bg-2); color: var(--muted); white-space: nowrap; }
