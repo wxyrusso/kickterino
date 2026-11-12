@@ -1043,6 +1043,9 @@ function lureVez(now = Date.now()) {
   return { noite, slot, h };
 }
 
+// Canais que não venderam o Lure: quem só tem pacote grande (3 h, 10 h) fica de fora por 1 dia;
+// os outros (limite de resgate, loja que não abriu) por 30 min. Assim a nova tentativa vai para outros canais.
+const lurePula = new Map();
 async function comprarLureNoite({ noite, slot, h }) {
   const c = lureCfg();
   const now = Date.now();
@@ -1065,7 +1068,9 @@ async function comprarLureNoite({ noite, slot, h }) {
     autoLog(`Lure de madrugada ${h}h: o saldo da Twitch (${s.total}) não paga o Lure sem mexer na reserva do XP (${s.reserva}); pulei esta hora.`);
     return fechar();
   }
-  const { rich } = autoChannels(LURE_PLAT, 'shiny');
+  const { rich: todos } = autoChannels(LURE_PLAT, 'shiny');
+  const rich = todos.filter(([slug]) => (lurePula.get(slug) || 0) <= now);
+  if (todos.length && !rich.length) { autoWaitUntil.set(`${LURE_PLAT}:shiny`, now + 10 * 60 * 1000); return; } // todos falharam há pouco: tenta em 10 min
   if (!rich.length) {
     autoLog(`Lure de madrugada ${h}h: nenhum canal da Twitch tem ${custo} pontos sobrando; pulei esta hora.`);
     return fechar();
@@ -1074,6 +1079,9 @@ async function comprarLureNoite({ noite, slot, h }) {
     const r = await withTimeout(redeemPokeBonusInChannel(slug, 'shiny'), 3 * 60 * 1000)
       .catch((e) => ({ status: 'failed', message: `demorou demais (${e && e.message || e})` }));
     autoLog(`Lure de madrugada ${h}h em ${slug}: ${r.status} — ${r.message || ''}`);
+    if (r.status !== 'redeemed' && r.status !== 'submitted') {
+      lurePula.set(slug, Date.now() + (/menor pacote/i.test(r.message || '') ? 24 * 60 : 30) * 60 * 1000);
+    }
     if (r.status === 'redeemed' || r.status === 'submitted') {
       if (r.status === 'submitted') addKnownPurchase(slug, custo, r.hours || 1, 'auto');
       send('toast', `🌙 Liguei o Secret Lure (Twitch) por 1 h no canal ${st.displayName || nameOf(slug)}.`);
