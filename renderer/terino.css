@@ -218,3 +218,11 @@ body.poke-focus #accounts-bar { display: none !important; }
 .auto-bonus th, .auto-bonus td { padding: 5px 16px 5px 0; text-align: center; }
 .auto-bonus th:first-child, .auto-bonus td:first-child { text-align: left; }
 .auto-bonus th { font-weight: 600; opacity: .8; }
+
+/* Barra de opções recolhida (botão ▴ ao lado do ⚙): fica só a linha das contas, com o resumo. */
+body.barra-curta #toolbar { display: none !important; }
+body.barra-curta #accounts-bar { padding-bottom: 6px; }
+body.barra-curta .acc-tab.acc-all { margin-left: 0; }
+.acc-tab.acc-fold { font-size: 12px; padding: 4px 10px; color: var(--muted); }
+.acc-tab.acc-resumo { display: inline-block; margin-left: auto; max-width: 52vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--muted); }
+.acc-tab.acc-resumo.alerta { color: #ffb4b4; border-color: rgba(255, 120, 120, .6); }

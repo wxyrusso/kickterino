@@ -574,6 +574,24 @@ async function switchAccount(id) {
     if (acc.open) showPoke(id); else { leavePoke(); }
   }
 }
+// Barra de opções recolhida (botão ▴ ao lado do ⚙): some a linha de Farmar pontos, Modo leve, Lives
+// ao mesmo tempo etc., e o resumo (com aviso se cair um login) vem para a linha das contas. Fica lembrado.
+const barraCurta = () => document.body.classList.contains('barra-curta');
+try { document.body.classList.toggle('barra-curta', localStorage.getItem('barra-curta') === '1'); } catch {}
+function setBarraCurta(on) {
+  document.body.classList.toggle('barra-curta', on);
+  try { localStorage.setItem('barra-curta', on ? '1' : '0'); } catch {}
+  renderAccountsBar();
+  if (pokeMode) window.kick.pokeIdleBounds(chatRect());
+}
+function atualizarResumoCurto() {
+  const rs = document.getElementById('resumo-curto');
+  if (!rs) return;
+  const semLogin = [!state.loggedIn && 'Kick', !(state.twitch || {}).loggedIn && 'Twitch'].filter(Boolean);
+  rs.textContent = (semLogin.length ? `⚠ ${semLogin.join(' e ')} sem login · ` : '') + $('#summary').textContent;
+  rs.classList.toggle('alerta', semLogin.length > 0);
+}
+
 function renderAccountsBar() {
   const bar = $('#accounts-bar');
   const tk = state.tk || { active: 'principal', accounts: [{ id: 'principal', label: 'Principal', connected: true }] };
@@ -622,6 +640,14 @@ function renderAccountsBar() {
     input.onblur = () => done(false);
   };
   bar.append(add);
+  if (barraCurta()) {
+    const rs = el('div', 'acc-tab acc-resumo');
+    rs.id = 'resumo-curto';
+    rs.title = 'Mostrar a barra de opções';
+    rs.onclick = () => setBarraCurta(false);
+    bar.append(rs);
+    atualizarResumoCurto();
+  }
   const all = el('div', 'acc-tab acc-all', '🎮 Abrir todos');
   all.title = 'Abre o PokeIdle de todas as contas de uma vez (cada um gasta uns 600 MB) e mostra o da conta escolhida';
   all.onclick = async () => {
@@ -636,6 +662,10 @@ function renderAccountsBar() {
   gear.title = 'Configurações: vigia e avisos, economia, overlay, celular e backups';
   gear.onclick = () => openSettings();
   bar.append(gear);
+  const fold = el('div', 'acc-tab acc-fold', barraCurta() ? '▾' : '▴');
+  fold.title = barraCurta() ? 'Mostrar a barra de opções' : 'Recolher a barra de opções (Farmar pontos, Modo leve, Lives ao mesmo tempo…)';
+  fold.onclick = () => setBarraCurta(!barraCurta());
+  bar.append(fold);
 }
 window.kick.onFocusToggle(() => setFocusMode(!focusMode));
 // A área do chat muda de tamanho (janela, painel de pontos, abas em mais linhas): o jogo acompanha.
@@ -787,6 +817,7 @@ function renderPanel() {
     + (queued ? (state.rotation ? ` · ${queued} na fila (foco no próximo bônus)` : ` · ${queued} sem vaga`) : '')
     + ` · ${totalPts.toLocaleString('pt-BR')} pts`
     + (gained ? ` (+${gained.toLocaleString('pt-BR')} nesta sessão)` : '');
+  atualizarResumoCurto();
 }
 
 function applyState(s) {
