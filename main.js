@@ -866,7 +866,14 @@ function autoChannels(platform, tipo, reserve = true) {
   if (reserve && tipo !== 'xp' && autoOn('xp', platform)) {
     rich = rich.filter(([slug, st]) => st.points - cost >= xpCost || known.some(([other, o]) => other !== slug && o.points >= xpCost));
   }
-  rich.sort((a, b) => (!!b[1].live - !!a[1].live) || (b[1].points - a[1].points));
+  // Lure de madrugada ligado: o Capture desta plataforma só usa o que passar do guardado para as 2 noites.
+  if (reserve && tipo === 'captura' && lureOn(platform)) {
+    const s = lureSaldo();
+    if (s.total - cost - s.reserva < s.meta) rich = [];
+  }
+  // E o XP sai do canal com menos pontos: os saldos grandes ficam para o Lure (1.000 num canal só).
+  const menor = tipo === 'xp' && lureOn(platform);
+  rich.sort((a, b) => (!!b[1].live - !!a[1].live) || (menor ? a[1].points - b[1].points : b[1].points - a[1].points));
   return { inUse: known.length > 0, rich };
 }
 
@@ -883,10 +890,12 @@ async function checkAutoBonus() {
       if (end - now <= AUTO_BEFORE_MS) due.push({ tipo, platform, key, end });
     }
   }
-  if (!due.length) return;
+  const lure = lureVez(now);
+  if (!due.length && !lure) return;
   autoBusy = true;
   try {
     for (const d of due) await renewBonus(d);
+    if (lure) await comprarLureNoite(lure);
   } finally {
     autoBusy = false;
   }
@@ -901,6 +910,7 @@ async function renewBonus({ tipo, platform, key, end }) {
   const left = Math.round((end - Date.now()) / 60000);
   autoLog(`${label}: ${end ? `acaba em ${left} min` : 'desligado'}; canais com saldo: ${rich.map(([sl, st]) => `${sl}=${st.points}`).join(', ') || 'nenhum'}`);
   if (!rich.length) {
+    if (tipo === 'captura' && lureOn(platform)) { autoWaitUntil.set(key, Date.now() + 30 * 60 * 1000); return; } // guardando para o Lure de madrugada
     if (autoWarned.get(key) !== end) {
       autoWarned.set(key, end);
       notify(`${label}: sem pontos para renovar`, tipo === 'xp'
@@ -998,6 +1008,112 @@ function autoPlan() {
   }
   return plan;
 }
+
+// ---------- Secret Lure de madrugada (Twitch) ----------
+// Junta a sobra do XP por alguns dias e gasta em 2 madrugadas seguidas: das 0h às 8h, hora sim hora não
+// (1 h de Lure às 0h, 2h, 4h e 6h = 4.000 pontos por noite). O par de noites só começa quando o saldo da
+// Twitch, tirando a reserva do XP, já paga as duas (8.000). Cada compra deixa a reserva do XP intacta
+// (12 h de XP, menos as horas que já estão pagas), e o Capture da Twitch só usa o que passar do guardado.
+const LURE_PLAT = 'twitch';
+const LURE_HORAS = [0, 2, 4, 6];
+const LURE_NOITES = 2;
+const LURE_RESERVA_XP_H = 12;
+const lureCfg = () => config.lureNoite || (config.lureNoite = { on: false, restam: 0, noite: null, slot: null });
+const lureOn = (platform) => platform === LURE_PLAT && !!(config.lureNoite && config.lureNoite.on);
+
+// Saldo da Twitch somado, a reserva do XP e o que sobra para o Lure (livre).
+function lureSaldo(now = Date.now()) {
+  const pts = [...new Set(config.channels)].filter((slug) => platformOf(slug) === LURE_PLAT)
+    .map((slug) => (status.get(slug) || {}).points).filter((p) => typeof p === 'number');
+  const total = pts.reduce((sum, p) => sum + p, 0);
+  const xpPagas = Math.max(0, ((bonusEnd(LURE_PLAT, POKE_TIPOS.indexOf('xp'), now) || 0) - now) / 3600000);
+  const reserva = autoOn('xp', LURE_PLAT) ? POKE_REDEEM_META.xp.cost * Math.max(0, Math.ceil(LURE_RESERVA_XP_H - xpPagas)) : 0;
+  const noite = LURE_HORAS.length * POKE_REDEEM_META.shiny.cost;
+  return { lido: pts.length > 0, total, reserva, livre: Math.max(0, total - reserva), noite, meta: LURE_NOITES * noite };
+}
+
+// É hora de comprar o Lure? (0h, 2h, 4h ou 6h, ainda sem compra nesta hora.)
+function lureVez(now = Date.now()) {
+  if (!lureOn(LURE_PLAT)) return null;
+  const h = new Date(now).getHours();
+  if (!LURE_HORAS.includes(h)) return null;
+  const noite = dayKey(now);
+  const slot = `${noite} ${h}`;
+  if (lureCfg().slot === slot || now < (autoWaitUntil.get(`${LURE_PLAT}:shiny`) || 0)) return null;
+  return { noite, slot, h };
+}
+
+async function comprarLureNoite({ noite, slot, h }) {
+  const c = lureCfg();
+  const now = Date.now();
+  const custo = POKE_REDEEM_META.shiny.cost;
+  const fechar = () => { c.slot = slot; configDirty = true; };
+  // Já tem Lure ligado (comprado à mão, por exemplo): esta hora está coberta.
+  if ((bonusEnd(LURE_PLAT, POKE_TIPOS.indexOf('shiny'), now) || 0) - now > 10 * 60 * 1000) return fechar();
+  const s = lureSaldo(now);
+  if (!s.lido) return;
+  if (c.noite !== noite) {
+    // 1ª compra da noite: é noite de Lure se falta a 2ª do par, ou se o guardado já paga as 2 noites.
+    if (c.restam > 0) c.restam -= 1;
+    else if (s.livre >= s.meta) c.restam = LURE_NOITES - 1;
+    else return; // ainda juntando: olha de novo na próxima vez
+    c.noite = noite;
+    configDirty = true;
+    autoLog(`Lure de madrugada: começou a noite de Lure${c.restam ? ' (amanhã tem mais uma)' : ' (a 2ª do par)'}; guardado ${s.livre}, reserva do XP ${s.reserva}.`);
+  }
+  if (s.total - custo < s.reserva) {
+    autoLog(`Lure de madrugada ${h}h: o saldo da Twitch (${s.total}) não paga o Lure sem mexer na reserva do XP (${s.reserva}); pulei esta hora.`);
+    return fechar();
+  }
+  const { rich } = autoChannels(LURE_PLAT, 'shiny');
+  if (!rich.length) {
+    autoLog(`Lure de madrugada ${h}h: nenhum canal da Twitch tem ${custo} pontos sobrando; pulei esta hora.`);
+    return fechar();
+  }
+  for (const [slug, st] of rich.slice(0, 4)) {
+    const r = await withTimeout(redeemPokeBonusInChannel(slug, 'shiny'), 3 * 60 * 1000)
+      .catch((e) => ({ status: 'failed', message: `demorou demais (${e && e.message || e})` }));
+    autoLog(`Lure de madrugada ${h}h em ${slug}: ${r.status} — ${r.message || ''}`);
+    if (r.status === 'redeemed' || r.status === 'submitted') {
+      if (r.status === 'submitted') addKnownPurchase(slug, custo, r.hours || 1, 'auto');
+      send('toast', `🌙 Liguei o Secret Lure (Twitch) por 1 h no canal ${st.displayName || nameOf(slug)}.`);
+      return fechar();
+    }
+  }
+  autoWaitUntil.set(`${LURE_PLAT}:shiny`, Date.now() + 10 * 60 * 1000); // tenta de novo em 10 min, ainda nesta hora
+}
+
+// O que o ⚙ > Bônus e o celular mostram.
+function lureResumo(now = Date.now()) {
+  const c = config.lureNoite || {};
+  if (!c.on) return { on: false };
+  const s = lureSaldo(now);
+  const fmt = (v) => Math.round(v).toLocaleString('pt-BR');
+  const nestaNoite = new Date(now).getHours() < 8 && c.noite === dayKey(now);
+  let texto;
+  if (!s.lido) texto = 'sem saldo lido da Twitch nesta conta (faça login na Twitch).';
+  else if (nestaNoite) texto = `esta madrugada é de Lure (0h–8h, hora sim hora não)${c.restam ? '; a próxima também' : ''}.`;
+  else if (c.restam > 0) texto = 'a próxima madrugada é de Lure (a 2ª do par).';
+  else if (s.livre >= s.meta) texto = 'já dá para as 2 madrugadas; começa na próxima hora de Lure (0h, 2h, 4h ou 6h).';
+  else {
+    const e = earnPerDay(LURE_PLAT);
+    const sobra = e ? e.perDay - (autoOn('xp', LURE_PLAT) ? POKE_REDEEM_META.xp.cost * 24 : 0) : 0;
+    texto = `juntando ${fmt(s.livre)} de ${fmt(s.meta)} pontos para 2 madrugadas${sobra > 0 ? ` (faltam ~${Math.max(1, Math.round((s.meta - s.livre) / sobra))} dia(s))` : ''}.`;
+  }
+  return { on: true, texto, livre: s.livre, meta: s.meta, reserva: s.reserva, restam: c.restam || 0, nestaNoite };
+}
+
+function setLureNoite(on, via = '') {
+  const c = lureCfg();
+  c.on = !!on;
+  if (!c.on) c.restam = 0;
+  autoLog(`Lure de madrugada ${c.on ? 'ligado' : 'desligado'}${via}.`);
+  saveConfig();
+  autoWaitUntil.delete(`${LURE_PLAT}:captura`);
+  autoWaitUntil.delete(`${LURE_PLAT}:shiny`);
+  return lureResumo();
+}
+ipcMain.handle('lure:set', (_e, on) => { setLureNoite(on); return snapshot(); });
 
 // ---------- Janela do PokeIdle ----------
 // O jogo só aceita UMA sessão por conta: o app não abre o jogo escondido (derrubaria o seu).
@@ -2000,7 +2116,7 @@ function pokeAccountsSummary() {
     return { id, label: pokeLabel(id), open: pokeIsOpen(id), mode: pokeChosenMode(id), modeNow: i.mode || null,
       nick: i.nick || null, level: i.level || null, gold: i.gold || null, xpH: i.xpH, abates: i.abates, capturas: i.capturas,
       shinies: i.shinies, shiniesVistos: i.shiniesVistos, bossTokens: i.bossTokens, itens: i.itens || null, sessMs: i.sessMs, ativo: i.ativo || null, hunt: i.hunt || null, inv: i.inv || null, compra: ultimaCompra.get(id) || null,
-      shinyPrev: shinyPrevisao(id, i), melhorHunt: melhorHuntDaConta(id),
+      shinyPrev: shinyPrevisao(id, i), melhorHunt: melhorHuntDaConta(id), lure: id === POKE_MAIN ? lureResumo() : null,
       seguir: { on: !!shinyFollowCfg().contas[id], st: (({ nome, nick, huntNome, ate } = {}) => (ate ? { nome, nick, huntNome, ate } : null))(shinyFollowCfg().estado[id]) },
       logged: i.logged ?? null, problem: i.problem || null, semXpMin: i.semXpMin || null, luz: i.luz || null, readAt: i.at || null };
   });
@@ -2052,6 +2168,11 @@ async function pokeFix(id, action, opts = {}) {
     const r = await (id === POKE_MAIN ? buyBonusNow(tipo, platform) : proxy(id, 'autobonus:buyNow', [tipo, platform], 4 * 60 * 1000))
       .catch((e) => ({ error: String(e && e.message || e) }));
     return r && r.message ? { ...r, message: `${label}: ${r.message}` } : r;
+  }
+  if (action === 'lure') {
+    if (id !== POKE_MAIN) return { error: 'O Lure de madrugada fica só na Principal.' };
+    const r = setLureNoite(opts.ligar, ' pelo celular');
+    return { ok: true, message: r.on ? `${label}: Lure de madrugada ligado; ${r.texto}` : `${label}: Lure de madrugada desligado. O Capture da Twitch volta a usar a sobra do XP.` };
   }
   if (action === 'seguir') {
     const c = shinyFollowCfg();
@@ -3006,6 +3127,7 @@ function snapshot() {
     notifyBonus: config.notifyBonus,
     autoBonus: config.autoBonus,
     autoPlan: autoPlan(),
+    lureNoite: lureResumo(),
     notifyChat: config.notifyChat,
     sleepMode: config.sleepMode,
     favorites: config.favorites,

@@ -477,7 +477,24 @@ function buildAutoBonusSettings() {
     }
     table.append(tr);
   }
+  // Secret Lure só de madrugada (Twitch): junta a sobra do XP e gasta em 2 madrugadas seguidas.
+  const lu = state.lureNoite || {};
+  const trL = el('tr');
+  trL.append(el('td', null, '+15% Secret Lure · 1.000/h · só de madrugada'));
+  const tdL = el('td');
+  const cL = el('input');
+  cL.type = 'checkbox';
+  cL.checked = !!lu.on;
+  cL.onchange = async () => {
+    applyState(await window.kick.setLureNoite(cL.checked));
+    toast(`Secret Lure de madrugada na Twitch: ${cL.checked ? 'ligado' : 'desligado'}.`);
+    det.replaceWith(buildAutoBonusSettings());
+  };
+  tdL.append(cL);
+  trL.append(tdL, el('td', null, '—'));
+  table.append(trL);
   det.append(table);
+  det.append(el('p', 'ex-note', `🌙 Secret Lure de madrugada (só Twitch): junta a sobra do XP e, quando der para 2 noites (8.000 pontos), compra 1 h às 0h, 2h, 4h e 6h por 2 madrugadas seguidas. Nunca usa os pontos das próximas 12 h de XP; enquanto junta, o Capture da Twitch só usa o que passar do guardado.${lu.on ? ` Agora: ${lu.texto}` : ''}`));
   for (const platform of ['twitch', 'kick']) {
     const label = platform === 'twitch' ? 'Twitch' : 'Kick';
     const p = plan[platform];

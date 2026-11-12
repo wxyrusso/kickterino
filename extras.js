@@ -65,7 +65,7 @@ module.exports = function createExtras(ctx) {
       if (url.pathname === '/celular') return sendHtml(res, MOBILE_HTML);
       return sendJson(res, ctx.data('painel'));
     }
-    // Botões do painel: { conta, acao: 'reload' | 'hunt' | 'buy' | 'seguir', tipo, plataforma, ligar } por POST, com a mesma chave do link.
+    // Botões do painel: { conta, acao: 'reload' | 'hunt' | 'buy' | 'seguir' | 'lure', tipo, plataforma, ligar } por POST, com a mesma chave do link.
     if (url.pathname === '/api/acao') {
       const ok = c.mobileOn && req.method === 'POST' && url.searchParams.get('t') === mobileToken() && ctx.action;
       if (!ok) { res.writeHead(404); return res.end(); }
@@ -343,6 +343,19 @@ const MOBILE_HTML = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-
         : 'Seguir shiny na conta ' + a.label + '? Quando alguém pegar um shiny no jogo, ela vai para a hunt desse Pokémon por 30 min (ou até sair outro shiny) e depois volta para onde estava.');
       bar2.append(bs);
       box.append(bar2);
+      // Secret Lure de madrugada (só a Principal): junta a sobra do XP da Twitch e gasta em 2 madrugadas.
+      const lu = a.lure;
+      if (lu) {
+        if (lu.on) box.append(el('div', 'line', '🌙 Lure de madrugada: ' + lu.texto));
+        const bar3 = el('div', 'acts');
+        const bl = el('button', lu.on ? 'on' : null, lu.on ? '🌙 Lure de madrugada ligado (toque para desligar)' : '🌙 Lure de madrugada');
+        bl.disabled = !!busy[a.id];
+        bl.onclick = () => agir(a, { acao: 'lure', ligar: !lu.on }, lu.on
+          ? 'Desligar o Lure de madrugada na conta ' + a.label + '? O Capture da Twitch volta a usar a sobra do XP.'
+          : 'Ligar o Lure de madrugada na conta ' + a.label + '? O TK junta a sobra do XP da Twitch e, quando der para 2 noites (8.000 pontos), compra o Secret Lure das 0h às 8h, hora sim hora não, por 2 madrugadas seguidas. O XP continua sempre ligado; o Capture da Twitch só usa o que passar do guardado.');
+        bar3.append(bl);
+        box.append(bar3);
+      }
       if (msgs[a.id]) box.append(el('div', 'msg' + (msgs[a.id].err ? ' err' : ''), msgs[a.id].text));
       list.append(box);
     }

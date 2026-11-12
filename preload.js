@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('kick', {
   pokeSettings: (patch) => ipcRenderer.invoke('poke:settings', patch),
   pokeTestAlert: () => ipcRenderer.invoke('poke:testAlert'),
   setAutoBonus: (tipo, platform, on) => ipcRenderer.invoke('autobonus:set', tipo, platform, on),
+  setLureNoite: (on) => ipcRenderer.invoke('lure:set', on),
   extrasInfo: () => ipcRenderer.invoke('extras:info'),
   extrasSet: (patch) => ipcRenderer.invoke('extras:set', patch),
   extrasBackup: () => ipcRenderer.invoke('extras:backup'),
