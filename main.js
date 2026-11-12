@@ -901,6 +901,20 @@ async function checkAutoBonus() {
   }
 }
 
+// Canais que não venderam um bônus (por tipo, porque o tamanho do pacote muda de bônus para bônus):
+// quem só vende pacote grande (3 h, 10 h) sai da fila por 1 dia; os outros erros (limite de resgate,
+// loja que não abriu) vão para o fim da fila por 30 min. Assim a renovação não gasta as tentativas neles.
+const canalPula = new Map();
+function marcarPulo(slug, tipo, r) {
+  if (r.status === 'redeemed' || r.status === 'submitted') { canalPula.delete(`${slug}|${tipo}`); return; }
+  const grande = /menor pacote/i.test(r.message || '');
+  canalPula.set(`${slug}|${tipo}`, { ate: Date.now() + (grande ? 24 * 60 : 30) * 60 * 1000, grande });
+}
+function filaSemPulos(rich, tipo, now = Date.now()) {
+  const p = ([slug]) => { const x = canalPula.get(`${slug}|${tipo}`); return x && x.ate > now ? x : null; };
+  return [...rich.filter((c) => !p(c)), ...rich.filter((c) => p(c) && !p(c).grande)];
+}
+
 async function renewBonus({ tipo, platform, key, end }) {
   const meta = POKE_REDEEM_META[tipo];
   const label = `${meta.name} (${platformLabel(platform)})`;
@@ -921,10 +935,11 @@ async function renewBonus({ tipo, platform, key, end }) {
     return;
   }
   let last = null;
-  for (const [slug, st] of rich.slice(0, platform === 'twitch' ? 4 : 8)) {
+  for (const [slug, st] of filaSemPulos(rich, tipo).slice(0, platform === 'twitch' ? 4 : 8)) {
     const r = await withTimeout(redeemPokeBonusInChannel(slug, tipo), 3 * 60 * 1000)
       .catch((e) => ({ status: 'failed', message: `demorou demais (${e && e.message || e})` }));
     autoLog(`${label} em ${slug}: ${r.status} — ${r.message || ''}`);
+    marcarPulo(slug, tipo, r);
     if (r.status === 'redeemed' || r.status === 'submitted') {
       // Twitch sem a confirmação no chat: anota a compra mesmo assim, para não comprar de novo logo em seguida.
       if (r.status === 'submitted' && (bonusEnd(platform, POKE_TIPOS.indexOf(tipo), Date.now()) || 0) - Date.now() < 30 * 60 * 1000) {
@@ -957,10 +972,11 @@ async function buyBonusNow(tipo, platform) {
   autoBusy = true;
   try {
     let last = null;
-    for (const [slug, st] of rich.slice(0, platform === 'twitch' ? 2 : 4)) {
+    for (const [slug, st] of filaSemPulos(rich, tipo).slice(0, platform === 'twitch' ? 2 : 4)) {
       const r = await withTimeout(redeemPokeBonusInChannel(slug, tipo), 2 * 60 * 1000)
         .catch((e) => ({ status: 'failed', message: `demorou demais (${e && e.message || e})` }));
       autoLog(`${meta.name} (${where}) pelo celular em ${slug}: ${r.status} — ${r.message || ''}`);
+      marcarPulo(slug, tipo, r);
       if (r.status === 'redeemed' || r.status === 'submitted') {
         if (r.status === 'submitted') addKnownPurchase(slug, meta.cost, r.hours || 1, 'auto');
         autoWaitUntil.set(`${platform}:${tipo}`, Date.now() + 10 * 60 * 1000);
