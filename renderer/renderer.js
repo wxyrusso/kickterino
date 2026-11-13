@@ -278,7 +278,7 @@ function renderPokeBox() {
     const card = el('div', 'pk-card' + (c.problem === 'semAbate' ? ' warn' : c.problem ? ' bad' : '') + (c.open ? '' : ' closed'));
     const top = el('div', 'pk-top');
     const st = !c.open ? ['fechada', 'off'] : c.problem === 'deslogou' ? ['deslogou', 'bad'] : c.problem === 'parada' ? ['sem XP', 'bad']
-      : c.problem === 'semAbate' ? [`caçando · ${c.semXpMin || 10} min sem abate`, 'warn']
+      : c.problem === 'semAbate' ? [`${c.semXpMin || 10} min sem abate`, 'warn']
       : c.logged === false ? ['sem login', 'warn'] : c.logged ? ['caçando', 'ok'] : ['abrindo…', 'off'];
     top.append(el('b', null, c.label), el('span', `pk-chip ${st[1]}`, st[0]));
     const sel = el('select', 'pk-mode');

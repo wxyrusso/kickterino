@@ -1865,6 +1865,7 @@ const POKE_READ_SCRIPT = `(() => {
     logged: (!!app && !app.classList.contains('hidden')) || token,
     loginScreen: !token && !!q('input[type="password"]'),
     nick, level: txt('#tr-level'), gold: txt('#tr-gold'), xp: txt('#tr-xp-txt'), sess, ativo, hunt, inv, outland, lure, luz,
+    ws: window.__tkGameWs ? window.__tkGameWs.readyState : null, online: navigator.onLine, oculta: document.hidden,
     mode: document.documentElement.classList.contains('modo-ultra') ? 'ultra'
       : localStorage.getItem('cfg-economia') === '1' ? 'economia' : localStorage.getItem('cfg-otimizado') === '1' ? 'otimizado' : 'cena',
   };
@@ -1952,12 +1953,15 @@ async function watchPokeAccount(id) {
   }
   pokeFails.delete(id);
   const prev = pokeInfo.get(id) || {};
+  const zerado = !!r.logged && String(r.level || '') === '1' && /^0?$/.test(String(r.gold || '').trim()) && !!prev.level && prev.level !== '1';
+  if (zerado) { r.level = null; r.gold = null; }
   const info = { at: now, logged: !!r.logged, nick: r.logged ? (r.nick || prev.nick || null) : null, level: r.logged ? (r.level || prev.level || null) : null, gold: r.logged ? (r.gold || prev.gold || null) : null,
     mode: r.mode, xpH: r.sess && r.sess.ms > 60000 ? Math.round(r.sess.xp / r.sess.ms * 3600e3) : null, sessXp: r.sess ? r.sess.xp : null,
     abates: r.sess ? r.sess.abates : null, capturas: r.sess ? r.sess.capturas : null, shinies: r.sess ? r.sess.shinies : null,
     shiniesVistos: r.sess ? r.sess.shiniesVistos : null, bossTokens: r.sess ? r.sess.bossTokens : null, itens: r.sess ? r.sess.itens : null,
     sessMs: r.sess ? r.sess.ms : null, ativo: r.logged ? (r.ativo || prev.ativo || null) : null, hunt: r.logged ? (r.hunt || null) : null, inv: r.logged ? (r.inv || null) : null,
-    arremessos: r.sess ? r.sess.arremessos : null, outland: r.logged ? !!r.outland : false, lure: r.logged ? (r.lure || null) : null, luz: r.logged ? (r.luz || null) : null, problem: null };
+    arremessos: r.sess ? r.sess.arremessos : null, outland: r.logged ? !!r.outland : false, lure: r.logged ? (r.lure || null) : null, luz: r.logged ? (r.luz || null) : null, problem: null,
+    xpTela: r.xp || null, ws: r.ws ?? null, online: r.online, oculta: r.oculta, zerado };
   // Shiny na mesma sessão de caça (o placar só sobe; se ele voltou a zero, é uma sessão nova): avisa.
   if (prev.shinies != null && info.shinies != null && (info.sessMs || 0) >= (prev.sessMs || 0)) {
     if (info.shinies > prev.shinies) pokeShout(id, `✨ Pegou um SHINY! Já são ${info.shinies} nesta sessão.`);
@@ -1985,6 +1989,7 @@ async function watchPokeAccount(id) {
   const paradaMin = pokeSettings().vigia.paradaMin;
   info.problem = pokeProblema(prev, info, parada, now, paradaMin);
   if (info.problem === 'semAbate' || info.problem === 'parada') info.semXpMin = Math.floor((now - parada.at) / 60000);
+  if (info.problem || prev.problem || info.zerado) registrarVigia(id, prev, info, parada, now);
   pokeInfo.set(id, info);
   const emCampo = info.ativo && info.ativo.nome ? ` Em campo: ${info.ativo.nome}${info.ativo.level ? ' Nv ' + info.ativo.level : ''}, que pode estar fraco para esta hunt.` : '';
   if (info.problem === 'deslogou') pokeAlert(id, 'deslogou', 'A conta saiu do jogo (deslogou ou caiu). Abra o PokeIdle dela e entre de novo.');
@@ -1999,6 +2004,18 @@ async function watchPokeAccount(id) {
     pokeLastReload.set(id, now);
     wc.reload();
   }
+}
+
+// vigia.log: o que o TK leu da conta enquanto há (ou acabou de haver) um aviso. Serve para saber, depois,
+// se o jogo parou de contar de verdade ou se a leitura ficou velha (sessão gravada parada, conexão caída).
+// ws: 0 conectando, 1 aberta, 2 fechando, 3 fechada, vazio = o TK ainda não viu o socket do jogo.
+function registrarVigia(id, prev, info, parada, now) {
+  const fase = !info.problem && !prev.problem ? 'tela-vazia' : !prev.problem ? 'COMEÇOU' : !info.problem ? 'ACABOU' : 'segue';
+  const linha = [new Date(now).toLocaleString('pt-BR'), pokeLabel(id), fase, info.problem || `(era ${prev.problem})`,
+    `xpSessão=${info.sessXp}`, `abates=${info.abates}`, `sessãoMin=${info.sessMs != null ? Math.round(info.sessMs / 60000) : '?'}`,
+    `xpTela=${info.xpTela}`, `luz=${info.luz}`, `ws=${info.ws ?? ''}`, `online=${info.online}`, `oculta=${info.oculta}`, `telaVazia=${info.zerado}`,
+    `hunt=${info.hunt}`, `xpParadoDesde=${parada ? new Date(parada.at).toLocaleTimeString('pt-BR') : '?'}`].join(' · ');
+  try { fs.appendFileSync(path.join(app.getPath('userData'), 'vigia.log'), linha + '\n'); } catch {}
 }
 
 // O que há de errado com a conta. XP parado não quer dizer conta parada: o XP de treinador só sobe quando
